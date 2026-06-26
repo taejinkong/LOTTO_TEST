@@ -1,0 +1,17 @@
+{
+  "name": "로또 분석 · 비인기 전략",
+  "short_name": "로또분석",
+  "description": "당첨번호 예측은 불가능. 데이터가 지지하는 유일한 전략 '1~12 회피'로 당첨 시 기대 수령액을 높이는 분석 앱.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "lang": "ko",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Claude Code 로컬 설정 (개인 권한/환경)
+.claude/
+
+# 임시
+scratchpad/
+*.tmp
+
+# 레퍼런스 스크린샷 (저장소 제외)
+스크린샷*.png
