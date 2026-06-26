@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1d4ed8" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="로또 분석" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="stylesheet" href="styles.css" />
+<title>로또 분석 — 비인기 전략 대시보드</title>
+</head>
+<body>
+<header class="appbar">
+  <div class="appbar-inner">
+    <div class="brand">
+      <span class="logo">🎱</span>
+      <div class="brand-txt">
+        <h1>로또 분석</h1>
+        <span class="sub">당첨번호 예측 불가 · 데이터가 지지하는 전략 ‘1~12 회피’</span>
+      </div>
+    </div>
+    <nav class="topnav" id="topnav">
+      <button data-tab="dashboard" class="active">대시보드</button>
+      <button data-tab="generate">번호 추천</button>
+      <button data-tab="backtest">백테스트</button>
+      <button data-tab="insights">인사이트</button>
+    </nav>
+    <div class="updated" id="updated">업데이트: —</div>
+  </div>
+</header>
+
+<main>
+  <!-- ── 대시보드 ───────────────────────── -->
+  <section class="tab" id="tab-dashboard">
+    <div class="kpis" id="kpis"></div>
+
+    <div class="card filterbar">
+      <div class="filter-title">🔎 필터</div>
+      <div class="filter-grid">
+        <label>회차 범위 (최근)
+          <select id="fRange">
+            <option value="0">전체</option>
+            <option value="500">최근 500회</option>
+            <option value="300">최근 300회</option>
+            <option value="200" selected>최근 200회</option>
+            <option value="100">최근 100회</option>
+            <option value="50">최근 50회</option>
+          </select>
+        </label>
+        <label>1~12 개수
+          <select id="fLow12">
+            <option value="all">전체</option>
+            <option value="0">0개</option>
+            <option value="1">1개</option>
+            <option value="2">2개</option>
+            <option value="3">3개+</option>
+          </select>
+        </label>
+        <label>홀짝
+          <select id="fOE">
+            <option value="all">전체</option>
+          </select>
+        </label>
+        <label>포함 번호
+          <input type="text" id="fInclude" placeholder="예: 34" inputmode="numeric" />
+        </label>
+        <button class="reset" id="fReset">초기화</button>
+        <label class="toggle">
+          <input type="checkbox" id="fUnpopular" />
+          <span class="track"></span> 비인기(1~12 ≤1)만
+        </label>
+      </div>
+    </div>
+
+    <div class="dash">
+      <!-- 좌측 시각 패널 -->
+      <div class="dash-left">
+        <div class="card heatmap-card">
+          <h3>번호 출현 히트맵 <span class="muted-inline">— 번호 클릭 시 필터</span></h3>
+          <div id="heatmap" class="heatmap"></div>
+          <div class="legend">
+            <span class="legend-grad"><i></i> 적음</span>
+            <span class="legend-grad"><i class="hi"></i> 많음</span>
+            <span class="legend-clear" id="legendClear" hidden>✕ 번호 필터 해제</span>
+          </div>
+        </div>
+        <div class="card info-card" id="selInfo">
+          번호를 클릭하면 해당 번호가 포함된 회차로 표·차트가 필터됩니다.
+        </div>
+        <div class="card notes" id="notes"></div>
+      </div>
+
+      <!-- 우측: 차트 + 테이블 -->
+      <div class="dash-right">
+        <div class="charts">
+          <div class="card chart-card">
+            <h3>홀짝 분포</h3>
+            <div id="chartOE" class="chart"></div>
+          </div>
+          <div class="card chart-card">
+            <h3>회차별 1등 당첨자 추이</h3>
+            <div id="chartLine" class="chart"></div>
+          </div>
+          <div class="card chart-card">
+            <h3>번호대(G1~G5) 분포</h3>
+            <div id="chartDonut" class="chart"></div>
+          </div>
+        </div>
+
+        <div class="card table-card">
+          <div class="table-head">
+            <h3>당첨 내역 <span class="muted-inline" id="tableCount"></span></h3>
+            <input type="search" id="tableSearch" class="table-search" placeholder="🔍 회차·날짜·번호 검색" />
+          </div>
+          <div class="table-scroll">
+            <table id="drawTable">
+              <thead>
+                <tr>
+                  <th data-sort="round">회차 ↕</th>
+                  <th data-sort="date">추첨일 ↕</th>
+                  <th class="nums-col">당첨번호 + 보너스</th>
+                  <th data-sort="low12">1~12 ↕</th>
+                  <th class="oe-col">홀짝</th>
+                  <th data-sort="winners">1등 당첨자 ↕</th>
+                  <th data-sort="amount">1인당(억) ↕</th>
+                </tr>
+              </thead>
+              <tbody id="drawTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 번호 추천 ──────────────────────── -->
+  <section class="tab" id="tab-generate" hidden>
+    <div class="card hero">
+      <h2>비인기 조합 추천</h2>
+      <p class="muted">
+        1등 확률은 모든 조합이 동일(1/8,145,060). 이 추천은 당첨됐을 때
+        <b>당첨자를 적게 만들어 1인당 수령액을 높이는</b> 것만 노립니다.
+      </p>
+      <div class="controls">
+        <label>생성 개수<input type="number" id="genCount" value="6" min="1" max="20" /></label>
+        <label>1~12 허용
+          <select id="genMaxLow">
+            <option value="0">0개 (가장 비인기)</option>
+            <option value="1" selected>최대 1개</option>
+            <option value="2">최대 2개</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="genNoConsec" /> 연속번호 회피</label>
+      </div>
+      <div class="controls">
+        <label class="grow">고정 번호 (쉼표, 선택)<input type="text" id="genFix" placeholder="예: 17, 33" inputmode="numeric" /></label>
+        <label class="grow">제외 번호 (쉼표, 선택)<input type="text" id="genExclude" placeholder="예: 7, 13" inputmode="numeric" /></label>
+      </div>
+      <button class="primary" id="genBtn">조합 생성</button>
+      <p class="error" id="genError" hidden></p>
+    </div>
+    <div id="genResults"></div>
+    <div class="card subtle">
+      <button class="ghost" id="qpBtn">⚡ 완전 무작위 1장 (자동선택)</button>
+      <div id="qpResult"></div>
+    </div>
+  </section>
+
+  <!-- ── 백테스트 ───────────────────────── -->
+  <section class="tab" id="tab-backtest" hidden>
+    <div class="card">
+      <h2>백테스트 · 1~12 회피 효과</h2>
+      <p class="muted">전 회차를 당첨번호의 1~12 개수로 묶어 <b>실제</b> 당첨자 수를 비교했습니다.</p>
+      <div id="btTable"></div>
+      <div id="btCompare" class="callout"></div>
+    </div>
+    <div class="card">
+      <h3>신호 안정성 (시기별)</h3>
+      <p class="muted">기간을 4등분해 ‘1~12 개수 → 당첨자’ 관계의 계수를 본 것. 클수록 신호가 강함.</p>
+      <div id="btStability"></div>
+    </div>
+    <div class="card">
+      <h3>회차 조회</h3>
+      <p class="muted">특정 회차의 당첨번호·1~12 개수·실제 당첨자를 확인합니다.</p>
+      <div class="controls">
+        <label class="grow">회차 번호<input type="number" id="lookupRound" placeholder="예: 1229" inputmode="numeric" /></label>
+        <button class="primary slim" id="lookupBtn">조회</button>
+      </div>
+      <div id="lookupResult"></div>
+    </div>
+  </section>
+
+  <!-- ── 인사이트 ───────────────────────── -->
+  <section class="tab" id="tab-insights" hidden>
+    <div class="card intro">
+      <h2>우리가 검증한 결론</h2>
+      <p class="muted">이 폴더에서 함께 분석하며 데이터로 확인한 핵심들입니다.</p>
+    </div>
+    <div id="insightCards"></div>
+  </section>
+</main>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
