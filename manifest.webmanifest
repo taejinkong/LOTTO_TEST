@@ -1,7 +1,7 @@
 {
-  "name": "로또 분석 · 비인기 전략",
+  "name": "로또 데이터 분석과 번호 생성",
   "short_name": "로또분석",
-  "description": "당첨번호 예측은 불가능. 데이터가 지지하는 유일한 전략 '1~12 회피'로 당첨 시 기대 수령액을 높이는 분석 앱.",
+  "description": "동행복권 공식 데이터와 페어·출현주기 점수로 후보 조합을 생성하는 분석 앱.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
