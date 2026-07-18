@@ -29,10 +29,9 @@ from lotto_prediction import (
 
 DEFAULT_TOP_K = (50, 300, 1000, 5000, 10000, 100000, 1000000)
 DEFAULT_PORTFOLIO_QUOTAS = {
-    "normal": 20,
+    "balanced": 25,
     "high_sum": 8,
     "high_band": 7,
-    "no_low": 5,
     "high_start": 5,
     "consecutive": 5,
 }
@@ -83,10 +82,8 @@ def build_candidate(numbers: tuple[int, ...]) -> CandidateInfo:
 
 def scenario_names(candidate: CandidateInfo) -> list[str]:
     names = []
-    if 1 <= candidate.low <= 2 and 100 <= candidate.total <= 159 and candidate.consecutive <= 1:
-        names.append("normal")
-    if candidate.low == 0:
-        names.append("no_low")
+    if 100 <= candidate.total <= 159 and candidate.consecutive <= 1:
+        names.append("balanced")
     if candidate.total >= 160:
         names.append("high_sum")
     if candidate.first >= 21:

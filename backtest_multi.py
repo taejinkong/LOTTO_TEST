@@ -40,10 +40,9 @@ TOTAL_COMBINATIONS = 8_145_060
 DEFAULT_CSV = "lotto_winners_2020_2026.csv"
 DEFAULT_TOP_K = (50, 300, 1_000, 10_000, 100_000)
 DEFAULT_PORTFOLIO_QUOTAS: dict[str, int] = {
-    "normal": 20,
+    "balanced": 25,
     "high_sum": 8,
     "high_band": 7,
-    "no_low": 5,
     "high_start": 5,
     "consecutive": 5,
 }
@@ -176,10 +175,8 @@ def classify_scenarios(numbers: tuple[int, ...]) -> list[str]:
     first  = numbers[0]
     consec = consecutive_count(numbers)
     names: list[str] = []
-    if 1 <= low <= 2 and 100 <= total <= 159 and consec <= 1:
-        names.append("normal")
-    if low == 0:
-        names.append("no_low")
+    if 100 <= total <= 159 and consec <= 1:
+        names.append("balanced")
     if total >= 160:
         names.append("high_sum")
     if first >= 21:

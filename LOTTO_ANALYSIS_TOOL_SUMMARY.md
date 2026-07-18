@@ -120,8 +120,7 @@ COLOR = 0-0-3-2-1
 
 | 시나리오 | 설명 |
 |---|---|
-| normal | 1~10 포함, 중간 합계, 연속 과다 없음 |
-| no_low | 1~10 번호가 하나도 없음 |
+| balanced | 합계 100~159, 연속번호 1쌍 이하 |
 | high_sum | 합계 160 이상 |
 | high_start | 첫 수 21 이상 |
 | consecutive | 연속번호 2쌍 이상 |
@@ -130,10 +129,9 @@ COLOR = 0-0-3-2-1
 최종 Top 50 포트폴리오 쿼터:
 
 ```text
-normal      20개
+balanced    25개
 high_sum     8개
 high_band    7개
-no_low       5개
 high_start   5개
 consecutive  5개
 ```
@@ -283,4 +281,3 @@ python3 backtest_1228.py --target-round 1227 --mode full --top 50 --top-k 50 --p
 ```bash
 python3 backtest_1228.py --target-round 1227 --mode sample --sample-size 50000 --top 50 --top-k 50
 ```
-

@@ -15,7 +15,6 @@ const numsOf = (r) => r.slice(2, 8);
 const bonusOf = (r) => r[8];
 const winnersOf = (r) => r[9];
 const amtOf = (r) => r[10];
-const low12Of = (r) => numsOf(r).filter((n) => n >= 1 && n <= 12).length;
 const oddOf = (r) => numsOf(r).filter((n) => n % 2 === 1).length;
 const oeOf = (r) => `${oddOf(r)}:${6 - oddOf(r)}`;
 const ballClass = (n) => (n <= 10 ? "c1" : n <= 20 ? "c2" : n <= 30 ? "c3" : n <= 40 ? "c4" : "c5");
@@ -124,10 +123,8 @@ function donutSVG(slices, opts = {}) {
 /* ── 대시보드 상태/필터 ───────────────── */
 const state = {
   range: 200,
-  low12: "all",
   oe: "all",
   include: null,
-  unpopular: false,
   tableSearch: "",
   sort: { key: "round", dir: -1 },
 };
@@ -136,13 +133,8 @@ function filteredDraws() {
   let rows = D.draws; // 회차 오름차순
   if (state.range > 0) rows = rows.slice(-state.range);
   return rows.filter((r) => {
-    if (state.low12 !== "all") {
-      const l = low12Of(r);
-      if (state.low12 === "3" ? l < 3 : l !== Number(state.low12)) return false;
-    }
     if (state.oe !== "all" && oeOf(r) !== state.oe) return false;
     if (state.include != null && !numsOf(r).includes(state.include)) return false;
-    if (state.unpopular && low12Of(r) > 1) return false;
     return true;
   });
 }
@@ -246,7 +238,7 @@ function renderTable(rows) {
   const getKey = {
     round: (r) => r[0],
     date: (r) => r[1],
-    low12: low12Of,
+    sum: (r) => numsOf(r).reduce((total, number) => total + number, 0),
     winners: winnersOf,
     amount: amtOf,
   }[key];
@@ -256,12 +248,11 @@ function renderTable(rows) {
   });
   const body = sorted
     .map((r) => {
-      const l = low12Of(r);
-      const lc = l === 0 ? "lo0" : l === 1 ? "lo1" : l === 2 ? "lo2" : "lo3";
+      const total = numsOf(r).reduce((sum, number) => sum + number, 0);
       return (
         `<tr><td><b>${r[0]}</b>회</td><td>${r[1]}</td>` +
         `<td>${ballsHtml(numsOf(r))}</td>` +
-        `<td><span class="pill ${lc}">${l}개</span></td>` +
+        `<td>${total}</td>` +
         `<td>${oeOf(r)}</td><td>${winnersOf(r)}명</td><td class="amt">${amtOf(r)}억</td></tr>`
       );
     })
@@ -275,10 +266,10 @@ function renderTable(rows) {
 
 function renderNotes() {
   $("#notes").innerHTML =
-    `📌 데이터: 동행복권 회차별 당첨번호 (${D.meta.firstRound}~${D.meta.lastRound}회, ${D.meta.count}회).<br>` +
-    `🔎 필터는 표·차트·KPI·히트맵에 모두 적용됩니다. 히트맵 번호 클릭 = 포함 회차 필터.<br>` +
-    `🧮 ‘1인당’은 1등 1인당 당첨금(억). 총판매금액 미제공이라 판매량 보정 프록시로 사용.<br>` +
-    `⚠️ 1등 확률은 어떤 조합이든 1/8,145,060. 이 앱은 적중률이 아니라 ‘당첨 시 수령액 기대값’만 다룹니다.`;
+    `데이터: 동행복권 공식 당첨 결과 ${D.meta.firstRound}~${D.meta.lastRound}회, ${D.meta.count}회.<br>` +
+    `필터는 표·차트·KPI·히트맵에 함께 적용됩니다.<br>` +
+    `후보 생성 모델: ${D.prediction.name}, 다음 대상 ${D.prediction.nextRound}회.<br>` +
+    `모든 단일 조합의 1등 확률은 1/8,145,060으로 같습니다.`;
 }
 
 function renderDashboard() {
@@ -297,22 +288,20 @@ function bindFilters() {
     $("#fOE").appendChild(new Option(`${k}`, k));
   });
   $("#fRange").addEventListener("change", (e) => { state.range = Number(e.target.value); renderDashboard(); });
-  $("#fLow12").addEventListener("change", (e) => { state.low12 = e.target.value; renderDashboard(); });
   $("#fOE").addEventListener("change", (e) => { state.oe = e.target.value; renderDashboard(); });
   $("#fInclude").addEventListener("input", (e) => {
     const v = parseInt(e.target.value, 10);
     state.include = Number.isInteger(v) && v >= 1 && v <= 45 ? v : null;
     renderDashboard();
   });
-  $("#fUnpopular").addEventListener("change", (e) => { state.unpopular = e.target.checked; renderDashboard(); });
   $("#tableSearch").addEventListener("input", (e) => {
     state.tableSearch = e.target.value;
     renderTable(filteredDraws());
   });
   $("#fReset").addEventListener("click", () => {
-    Object.assign(state, { range: 200, low12: "all", oe: "all", include: null, unpopular: false, tableSearch: "" });
-    $("#fRange").value = "200"; $("#fLow12").value = "all"; $("#fOE").value = "all";
-    $("#fInclude").value = ""; $("#fUnpopular").checked = false; $("#tableSearch").value = "";
+    Object.assign(state, { range: 200, oe: "all", include: null, tableSearch: "" });
+    $("#fRange").value = "200"; $("#fOE").value = "all";
+    $("#fInclude").value = ""; $("#tableSearch").value = "";
     renderDashboard();
   });
   $("#legendClear").addEventListener("click", () => {
@@ -339,113 +328,109 @@ $$(".topnav button").forEach((btn) => {
   });
 });
 
-/* ── 번호 추천 ────────────────────────── */
-const nLow12 = (nums) => nums.filter((n) => n >= 1 && n <= 12).length;
-const predWinners = (nums) => Math.exp(D.model.intercept + D.model.coef * nLow12(nums));
-
+/* ── 번호 생성 ────────────────────────── */
 function parseNumberList(raw) {
   if (!raw.trim()) return [];
   const out = [];
   for (const part of raw.split(/[,\s]+/)) {
     if (!part) continue;
-    const v = parseInt(part, 10);
-    if (Number.isNaN(v) || v < 1 || v > 45) throw new Error(`잘못된 번호: "${part}" (1~45만 가능)`);
-    if (!out.includes(v)) out.push(v);
+    const value = parseInt(part, 10);
+    if (!Number.isInteger(value) || value < 1 || value > 45) throw new Error(`잘못된 번호: "${part}"`);
+    if (!out.includes(value)) out.push(value);
   }
   return out;
 }
-function hasConsecutive(nums) {
-  const s = [...nums].sort((a, b) => a - b);
-  for (let i = 1; i < s.length; i++) if (s[i] - s[i - 1] === 1) return true;
-  return false;
+function randomInt(max) {
+  if (window.crypto?.getRandomValues) {
+    const values = new Uint32Array(1);
+    const limit = Math.floor(0x100000000 / max) * max;
+    do window.crypto.getRandomValues(values); while (values[0] >= limit);
+    return values[0] % max;
+  }
+  return Math.floor(Math.random() * max);
 }
-function generateCombos(opts) {
-  const { count, maxLow12, noConsec, fix, exclude } = opts;
-  const excludeSet = new Set(exclude);
-  const fixLow = nLow12(fix);
+function sample(arr, count) {
+  const copy = [...arr];
+  for (let i = 0; i < count; i++) {
+    const j = i + randomInt(copy.length - i); [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy.slice(0, count);
+}
+const consecutiveCount = (numbers) => numbers.slice(1).filter((number, i) => number - numbers[i] === 1).length;
+function matchesScenario(numbers, scenario) {
+  if (!scenario) return true;
+  const low = numbers.filter((number) => number <= 10).length;
+  const high = numbers.filter((number) => number >= 31).length;
+  const total = numbers.reduce((sum, number) => sum + number, 0);
+  const checks = [
+    scenario.min_low == null || low >= scenario.min_low, scenario.max_low == null || low <= scenario.max_low,
+    scenario.min_high == null || high >= scenario.min_high, scenario.max_high == null || high <= scenario.max_high,
+    scenario.min_sum == null || total >= scenario.min_sum, scenario.max_sum == null || total <= scenario.max_sum,
+    scenario.min_first == null || numbers[0] >= scenario.min_first, scenario.max_first == null || numbers[0] <= scenario.max_first,
+    scenario.min_consecutive == null || consecutiveCount(numbers) >= scenario.min_consecutive,
+    scenario.max_consecutive == null || consecutiveCount(numbers) <= scenario.max_consecutive,
+  ];
+  return checks.every(Boolean);
+}
+function scoreParts(numbers) {
+  let pair = 0;
+  for (let i = 0; i < numbers.length; i++) for (let j = i + 1; j < numbers.length; j++) {
+    pair += D.prediction.pairScores[`${numbers[i]}-${numbers[j]}`] || 0;
+  }
+  pair /= 15;
+  const cycle = numbers.reduce((sum, number) => sum + (D.prediction.cycleScores[String(number)] || 0), 0) / 6;
+  const oe = `OE=${numbers.filter((number) => number % 2).length}:${numbers.filter((number) => number % 2 === 0).length}`;
+  const penalty = D.prediction.rareOePatterns.includes(D.prediction.previousOe) && D.prediction.rareOePatterns.includes(oe)
+    ? D.prediction.rareAfterRarePenalty : 0;
+  const total = pair * D.prediction.weights.pair + cycle * D.prediction.weights.cycle - penalty;
+  return { pair, cycle, penalty, total };
+}
+function generateCombos({ count, poolSize, scenarioName, noConsec, fix, exclude }) {
+  const fixed = new Set(fix), excluded = new Set(exclude);
   if (fix.length > 6) throw new Error("고정 번호는 최대 6개입니다.");
-  if (fix.some((n) => excludeSet.has(n))) throw new Error("고정 번호와 제외 번호가 겹칩니다.");
-  if (fixLow > maxLow12) throw new Error(`고정 번호에 1~12가 ${fixLow}개라 ‘1~12 허용 ${maxLow12}개’ 제약과 충돌합니다.`);
-  const fixSet = new Set(fix);
-  const lowPool = [], highPool = [];
-  for (let n = 1; n <= 45; n++) {
-    if (fixSet.has(n) || excludeSet.has(n)) continue;
-    (n <= 12 ? lowPool : highPool).push(n);
+  if (fix.some((number) => excluded.has(number))) throw new Error("고정 번호와 제외 번호가 겹칩니다.");
+  const available = Array.from({ length: 45 }, (_, i) => i + 1).filter((number) => !fixed.has(number) && !excluded.has(number));
+  const needed = 6 - fix.length;
+  if (needed > available.length) throw new Error("제외수가 너무 많아 조합을 만들 수 없습니다.");
+  const scenario = D.prediction.scenarios.find((item) => item.name === scenarioName);
+  const history = new Set(D.draws.map((row) => numsOf(row).join(",")));
+  const found = new Map();
+  const maxAttempts = Math.max(poolSize * 30, 20000);
+  for (let attempt = 0; attempt < maxAttempts && found.size < poolSize; attempt++) {
+    const numbers = [...fix, ...sample(available, needed)].sort((a, b) => a - b);
+    const key = numbers.join(",");
+    if (found.has(key) || history.has(key)) continue;
+    if (noConsec && consecutiveCount(numbers) > 0) continue;
+    if (!matchesScenario(numbers, scenario)) continue;
+    found.set(key, { numbers, parts: scoreParts(numbers) });
   }
-  const need = 6 - fix.length;
-  if (need > 0 && highPool.length + Math.min(lowPool.length, maxLow12 - fixLow) < need)
-    throw new Error("조건이 너무 빡빡해 조합을 만들 수 없습니다. 제외/고정 수를 줄여보세요.");
-  const sample = (arr, k) => {
-    const a = [...arr];
-    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
-    return a.slice(0, k);
-  };
-  const seen = new Set(), result = [];
-  let attempts = 0;
-  while (result.length < count && attempts < count * 4000) {
-    attempts++;
-    const lowBudget = Math.min(maxLow12 - fixLow, lowPool.length, need);
-    const kLow = lowBudget > 0 ? Math.floor(Math.random() * (lowBudget + 1)) : 0;
-    if (need - kLow > highPool.length) continue;
-    const picks = [...fix, ...sample(lowPool, kLow), ...sample(highPool, need - kLow)].sort((a, b) => a - b);
-    if (picks.length !== 6) continue;
-    if (noConsec && hasConsecutive(picks)) continue;
-    const key = picks.join(",");
-    if (seen.has(key)) continue;
-    seen.add(key); result.push(picks);
-  }
-  if (result.length === 0) throw new Error("조합 생성 실패. 제약을 완화해 주세요.");
-  result.sort((a, b) => predWinners(a) - predWinners(b));
-  return result;
+  if (!found.size) throw new Error("조건을 만족하는 조합을 찾지 못했습니다.");
+  return [...found.values()].sort((a, b) => b.parts.total - a.parts.total).slice(0, count);
 }
-function renderCombos(combos, fix) {
-  const wrap = $("#genResults");
-  wrap.innerHTML = "";
+function renderCombos(combos, fix, poolSize) {
+  const wrap = $("#genResults"); wrap.innerHTML = "";
   const card = el("div", "card");
-  card.appendChild(el("h3", null, `생성된 조합 ${combos.length}개 · 비인기 순`));
-  const base = D.model.baselineWinners;
-  for (const nums of combos) {
-    const pred = predWinners(nums);
-    const vs = Math.round(((pred - base) / base) * 100);
-    const better = vs <= 0;
+  card.appendChild(el("h3", null, `${poolSize.toLocaleString()}개 후보 중 상위 ${combos.length}개`));
+  combos.forEach(({ numbers, parts }, index) => {
     const row = el("div", "combo");
-    row.innerHTML =
-      ballsHtml(nums, fix, "lg") +
-      `<div class="tag">1~12 <b>${nLow12(nums)}개</b><br>예측 당첨자 ${pred.toFixed(1)}명<br>전형比 <b style="color:${better ? "var(--good)" : "var(--warn)"}">${vs > 0 ? "+" : ""}${vs}%</b></div>`;
+    row.innerHTML = ballsHtml(numbers, fix, "lg") +
+      `<div class="tag"><b>${index + 1}위 · ${parts.total.toFixed(6)}</b><br>페어 ${parts.pair.toFixed(4)} · 주기 ${parts.cycle.toFixed(4)}${parts.penalty ? `<br>홀짝 감점 -${parts.penalty.toFixed(2)}` : ""}</div>`;
     card.appendChild(row);
-  }
-  const note = el("p", "muted",
-    `예측 당첨자 = exp(${D.model.intercept} + ${D.model.coef}×1~12개수) · ${D.model.basis} 회귀. ` +
-    `‘전형比’는 1~12를 평균(${D.model.meanLow12}개)만큼 가진 전형적 조합(예측 ${base}명) 대비입니다. ` +
-    `음수일수록 당첨자가 적어 1인당 수령액↑. 1등 확률은 1/8,145,060으로 모두 동일합니다.`);
-  note.style.marginTop = "10px";
-  card.appendChild(note);
+  });
+  card.appendChild(el("p", "muted", "점수는 후보 풀 안의 정렬 기준입니다. 조합별 1등 확률은 모두 1/8,145,060으로 동일합니다."));
   wrap.appendChild(card);
 }
 
-/* ── 백테스트 ─────────────────────────── */
+/* ── 모델 검증 ────────────────────────── */
 function renderBacktest() {
-  const bt = D.backtest;
-  const rows = bt.groups.map((g) => `<tr><td>${g.label}</td><td>${g.rounds}</td><td>${g.avgWinners}명</td><td>${g.avgAmountEok}억</td></tr>`).join("");
-  $("#btTable").innerHTML =
-    `<table class="bt-table"><thead><tr><th>1~12 개수</th><th>회차</th><th>실제 당첨자</th><th>1인당 금액</th></tr></thead><tbody>${rows}</tbody></table>` +
-    `<p class="muted" style="margin-top:10px">단조성: ` + bt.groups.map((g) => `${g.label} ${g.avgWinners}명`).join(" → ") + `</p>`;
-  const c = bt.compare;
-  if (c && c.hiMean != null) {
-    const box = $("#btCompare");
-    box.className = "callout" + (c.significant ? "" : " warn");
-    box.innerHTML =
-      `<b>1~12 ‘0개’</b> 회차 평균 당첨자 ${c.loMean}명 vs <b>‘3개+’</b> ${c.hiMean}명<br>` +
-      `→ 0개 조합이 약 <b>${c.reductionPct}%</b> 적은 당첨자 (Welch t=${c.welchT}, ${c.significant ? "유의" : "경계/약함"})<br>` +
-      `<span style="color:var(--muted)">당첨자가 적을수록 1인당 수령액이 커집니다. 단 효과는 작고 보장이 아닙니다.</span>`;
-  }
-  const maxAbs = Math.max(...bt.stability.map((s) => Math.abs(s.coef)), 0.001);
+  const validation = D.validation;
+  const rows = validation.variants.map((item) => `<tr><td>${item.label}</td><td>${item.averagePercentile}%</td><td>${item.medianPercentile}%</td></tr>`).join("");
+  $("#btTable").innerHTML = `<table class="bt-table"><thead><tr><th>모델</th><th>평균 백분위</th><th>중앙 백분위</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $("#btCompare").innerHTML = `<b>${validation.rounds} · ${validation.count}회 검증</b><br>현재 모델의 Top 100,000 진입: ${validation.top100kHits}회. 백분위 개선만으로 당첨 예측력이 입증된 것은 아닙니다.`;
+  const weights = D.prediction.weights;
   $("#btStability").innerHTML =
-    '<div class="barlist">' + bt.stability.map((s) => {
-      const w = Math.round((Math.abs(s.coef) / maxAbs) * 100);
-      const strong = Math.abs(s.t) >= 2;
-      return `<div class="barrow"><span class="lbl">${s.label}</span><div class="bartrack"><div class="barfill" style="width:${w}%;${strong ? "" : "opacity:.4"}"></div></div><span class="val">${s.coef >= 0 ? "+" : ""}${s.coef}<br><small style="color:var(--muted)">t=${s.t}</small></span></div>`;
-    }).join("") + "</div><p class='muted' style='margin-top:10px'>t≥2면 유의(진한 막대). 가운데 시기에 강했고 최근 약해지는 추세입니다.</p>";
+    `<table class="bt-table"><tbody><tr><td>페어 평균</td><td>× ${weights.pair}</td></tr><tr><td>출현주기 평균</td><td>× ${weights.cycle}</td></tr><tr><td>희귀 홀짝 연속</td><td>− ${D.prediction.rareAfterRarePenalty}</td></tr></tbody></table>` +
+    `<p class="muted" style="margin-top:10px">최근 ${D.prediction.recentWindow}회 페어 빈도와 전체 빈도를 결합합니다. 조건부 패턴과 개별 번호 빈도 점수의 가중치는 0입니다.</p>`;
 }
 
 /* ── 인사이트 ─────────────────────────── */
@@ -464,20 +449,21 @@ function bindActions() {
     try {
       const fix = parseNumberList($("#genFix").value);
       const exclude = parseNumberList($("#genExclude").value);
+      const poolSize = parseInt($("#genPool").value, 10);
       const combos = generateCombos({
         count: Math.max(1, Math.min(20, parseInt($("#genCount").value, 10) || 6)),
-        maxLow12: parseInt($("#genMaxLow").value, 10),
+        poolSize,
+        scenarioName: $("#genScenario").value,
         noConsec: $("#genNoConsec").checked,
         fix, exclude,
       });
-      renderCombos(combos, fix);
+      renderCombos(combos, fix, poolSize);
     } catch (e) { errBox.textContent = e.message; errBox.hidden = false; }
   });
   $("#qpBtn").addEventListener("click", () => {
-    const pool = []; for (let n = 1; n <= 45; n++) pool.push(n);
-    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
-    const nums = pool.slice(0, 6).sort((a, b) => a - b);
-    $("#qpResult").innerHTML = `<div class="combo" style="margin-top:12px">${ballsHtml(nums, [], "lg")}<div class="tag">완전 무작위<br>1~12 ${nLow12(nums)}개</div></div>`;
+    const pool = Array.from({ length: 45 }, (_, i) => i + 1);
+    const nums = sample(pool, 6).sort((a, b) => a - b);
+    $("#qpResult").innerHTML = `<div class="combo" style="margin-top:12px">${ballsHtml(nums, [], "lg")}<div class="tag">완전 무작위</div></div>`;
   });
   $("#lookupBtn").addEventListener("click", () => {
     const r = parseInt($("#lookupRound").value, 10);
@@ -486,7 +472,7 @@ function bindActions() {
     if (!row) { box.innerHTML = `<p class="error">${D.meta.firstRound}~${D.meta.lastRound}회에서 ${r}회를 찾을 수 없습니다.</p>`; return; }
     box.innerHTML =
       `<div class="combo" style="margin-top:8px">${ballsHtml(numsOf(row), [], "lg")}<div class="ball lg bonus">+${bonusOf(row)}</div>` +
-      `<div class="tag">${row[1]}<br>1~12 <b>${low12Of(row)}개</b></div></div>` +
+      `<div class="tag">${row[1]}<br>합계 <b>${numsOf(row).reduce((sum, number) => sum + number, 0)}</b></div></div>` +
       `<p class="muted">${r}회 · 1등 ${winnersOf(row)}명 · 1인당 ${amtOf(row)}억</p>`;
   });
 }
@@ -494,6 +480,10 @@ function bindActions() {
 /* ── 초기화 ───────────────────────────── */
 function init() {
   $("#updated").textContent = `업데이트: ${D.meta.latest.date} · ${D.meta.latest.round}회`;
+  $("#generatorTitle").textContent = `${D.prediction.nextRound}회 후보 생성`;
+  D.prediction.scenarios.forEach((scenario) => {
+    $("#genScenario").appendChild(new Option(scenario.description, scenario.name));
+  });
   bindFilters();
   bindActions();
   renderDashboard();

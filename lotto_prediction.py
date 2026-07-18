@@ -27,6 +27,9 @@ from lotto_analyzer import (
 
 
 RARE_OE_PATTERNS = {"OE=5:1", "OE=1:5", "OE=6:0", "OE=0:6"}
+MODEL_NAME = "pair_cycle_v1"
+SCORE_WEIGHTS = {"pattern": 0.0, "number": 0.0, "pair": 0.14, "cycle": 0.08}
+RARE_AFTER_RARE_PENALTY = 0.35
 
 
 @dataclass(frozen=True)
@@ -46,8 +49,7 @@ class Scenario:
 
 
 SCENARIOS = [
-    Scenario("normal", "정상형: 1~10 포함, 중간 합계, 연속 과다 없음", min_low=1, max_low=2, min_sum=100, max_sum=159, max_consecutive=1),
-    Scenario("no_low", "1~10 미출현형: 1~10 번호가 하나도 없는 조합", min_low=0, max_low=0),
+    Scenario("balanced", "균형형: 합계 100~159, 연속번호 1쌍 이하", min_sum=100, max_sum=159, max_consecutive=1),
     Scenario("high_sum", "고합계형: 합계 160 이상", min_sum=160),
     Scenario("high_start", "고첫수형: 첫 수 21 이상", min_first=21),
     Scenario("consecutive", "연속형: 연속번호 2쌍 이상", min_consecutive=2),
@@ -206,7 +208,7 @@ def score_candidate(
     pair_scores: dict[tuple[int, int], float] | None = None,
     cycle_scores: dict[int, float] | None = None,
     previous_oe: str | None = None,
-    rare_after_rare_penalty: float = 0.35,
+    rare_after_rare_penalty: float = RARE_AFTER_RARE_PENALTY,
 ) -> float:
     pattern_score = sum(target_scores.get(feature, 0) for feature in candidate_target_features(numbers))
     number_score = sum(number_scores[number] for number in numbers) / 6
@@ -216,10 +218,38 @@ def score_candidate(
     cycle_score = 0.0
     if cycle_scores:
         cycle_score = sum(cycle_scores[number] for number in numbers) / 6
-    score = pattern_score * 0.62 + number_score * 0.16 + pair_score * 0.14 + cycle_score * 0.08
+    score = (
+        pattern_score * SCORE_WEIGHTS["pattern"]
+        + number_score * SCORE_WEIGHTS["number"]
+        + pair_score * SCORE_WEIGHTS["pair"]
+        + cycle_score * SCORE_WEIGHTS["cycle"]
+    )
     if previous_oe in RARE_OE_PATTERNS and odd_even(numbers) in RARE_OE_PATTERNS:
         score -= rare_after_rare_penalty
     return score
+
+
+def canonical_score_parts(
+    numbers: tuple[int, ...],
+    pair_scores: dict[tuple[int, int], float],
+    cycle_scores: dict[int, float],
+    previous_oe: str | None = None,
+    rare_after_rare_penalty: float = RARE_AFTER_RARE_PENALTY,
+) -> dict[str, float]:
+    """Return the exact score components shared by the CLI and web app."""
+    pair = sum(pair_scores[item] for item in combinations(numbers, 2)) / 15
+    cycle = sum(cycle_scores[number] for number in numbers) / 6
+    penalty = (
+        rare_after_rare_penalty
+        if previous_oe in RARE_OE_PATTERNS and odd_even(numbers) in RARE_OE_PATTERNS
+        else 0.0
+    )
+    return {
+        "pair": pair,
+        "cycle": cycle,
+        "penalty": penalty,
+        "total": pair * SCORE_WEIGHTS["pair"] + cycle * SCORE_WEIGHTS["cycle"] - penalty,
+    }
 
 
 def top_candidates_by_scenario(
@@ -229,7 +259,7 @@ def top_candidates_by_scenario(
     pair_scores: dict[tuple[int, int], float] | None = None,
     cycle_scores: dict[int, float] | None = None,
     previous_oe: str | None = None,
-    rare_after_rare_penalty: float = 0.35,
+    rare_after_rare_penalty: float = RARE_AFTER_RARE_PENALTY,
 ) -> dict[str, list[tuple[float, tuple[int, ...]]]]:
     heaps: dict[str, list[tuple[float, tuple[int, ...]]]] = {scenario.name: [] for scenario in SCENARIOS}
 
