@@ -618,6 +618,105 @@ function renderCombos(result, settings) {
   $("#lockCard").hidden = false;
   $("#lockStatus").textContent = "";
   $("#lockBtn").disabled = false;
+  $("#generationSaveCard").hidden = false;
+  $("#generationSaveStatus").textContent = "";
+}
+
+/* ── 생성 번호 저장 / 텍스트 내보내기 ─── */
+const SAVED_GENERATIONS_KEY = "lottoSavedGenerationsV1";
+function loadSavedGenerations() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SAVED_GENERATIONS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function saveSavedGenerations(records) {
+  localStorage.setItem(SAVED_GENERATIONS_KEY, JSON.stringify(records));
+}
+function generationSignature(record) {
+  return [
+    record.targetRound,
+    record.model,
+    record.seed,
+    ...(record.lines || []).map((line) => line.numbers.join(",")),
+  ].join("|");
+}
+function saveCurrentGeneration() {
+  if (!currentGeneration) throw new Error("먼저 후보를 생성해 주세요.");
+  const records = loadSavedGenerations();
+  const signature = generationSignature(currentGeneration);
+  const duplicate = records.find((record) => generationSignature(record) === signature);
+  if (duplicate) return { duplicate: true, record: duplicate };
+  const savedAt = new Date().toISOString();
+  const record = JSON.parse(JSON.stringify({
+    ...currentGeneration,
+    id: `generation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    savedAt,
+  }));
+  records.unshift(record);
+  saveSavedGenerations(records.slice(0, 50));
+  renderSavedGenerations();
+  return { duplicate: false, record };
+}
+function generationText(record) {
+  const settings = record.settings || {};
+  const filters = (settings.experimentalRules || []).map(ruleLabel);
+  const conditions = [
+    scenarioLabel(settings.scenario),
+    settings.noConsecutive ? "연속번호 제외" : "연속번호 허용",
+    settings.diversify ? `조합 간 중복 최대 ${settings.maxOverlap ?? 4}개` : "조합 분산 제한 없음",
+    settings.fixed?.length ? `고정 번호 ${settings.fixed.join(", ")}` : "고정 번호 없음",
+    settings.excluded?.length ? `제외 번호 ${settings.excluded.join(", ")}` : "제외 번호 없음",
+    filters.length ? `실험 필터 ${filters.join(", ")}` : "실험 필터 없음",
+  ];
+  const generatedAt = new Date(record.generatedAt || record.savedAt || Date.now()).toLocaleString("ko-KR");
+  const lines = (record.lines || []).map((line, index) =>
+    `${String(index + 1).padStart(3, "0")}. ${line.numbers.map((number) => String(number).padStart(2, "0")).join(" ")}`
+  );
+  return [
+    "로또 번호 생성 결과",
+    `대상 회차: ${record.targetRound}회`,
+    `생성 시각: ${generatedAt}`,
+    `데이터 기준: ${record.dataCutoffRound}회까지`,
+    `점수 모델: ${record.modelName || record.modelVersion || record.model}`,
+    `재현 시드: ${record.seed}`,
+    `생성 조합: ${lines.length}개`,
+    `조건: ${conditions.join(" / ")}`,
+    "",
+    ...lines,
+    "",
+    "※ 모든 단일 조합의 1등 확률은 1/8,145,060으로 동일합니다.",
+  ].join("\n");
+}
+function downloadGenerationText(record) {
+  if (!record?.lines?.length) throw new Error("내보낼 생성 번호가 없습니다.");
+  const blob = new Blob(["\ufeff", generationText(record)], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `lotto-${record.targetRound}round-${record.lines.length}games-${new Date().toISOString().slice(0, 10)}.txt`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+function renderSavedGenerations() {
+  const records = loadSavedGenerations();
+  const list = $("#savedGenerationList");
+  if (!records.length) {
+    list.innerHTML = `<div class="saved-empty">저장한 생성 결과가 없습니다.</div>`;
+    return;
+  }
+  list.innerHTML = `<div class="saved-title">저장한 결과 ${records.length}개</div>` + records.map((record) => {
+    const savedAt = new Date(record.savedAt || record.generatedAt).toLocaleString("ko-KR");
+    return `<div class="saved-generation" data-id="${escapeHtml(record.id)}">` +
+      `<div><b>${record.targetRound}회 · ${record.lines.length}조합</b>` +
+      `<span>${escapeHtml(record.modelName || record.modelVersion || record.model)} · 시드 ${escapeHtml(record.seed)} · ${escapeHtml(savedAt)}</span></div>` +
+      `<div class="saved-actions"><button class="ghost slim" data-export-saved>TXT</button>` +
+      `<button class="ghost slim danger" data-delete-saved>삭제</button></div></div>`;
+  }).join("");
 }
 
 /* ── 선택형 실험 규칙 / 배제 위험 ─────── */
@@ -845,7 +944,7 @@ function bindActions() {
       const poolSize = parseInt($("#genPool").value, 10);
       const modelName = $("#genModel").value;
       const settings = {
-        count: Math.max(1, Math.min(20, parseInt($("#genCount").value, 10) || 6)),
+        count: Math.max(1, Math.min(100, parseInt($("#genCount").value, 10) || 6)),
         poolSize,
         scenarioName: $("#genScenario").value,
         modelName,
@@ -875,6 +974,47 @@ function bindActions() {
     }
   });
   $("#exportLedgerBtn").addEventListener("click", exportLedger);
+  $("#saveGenerationBtn").addEventListener("click", () => {
+    const status = $("#generationSaveStatus");
+    try {
+      const result = saveCurrentGeneration();
+      status.classList.remove("error");
+      status.textContent = result.duplicate ? "이미 저장된 결과입니다." : "현재 생성 결과를 브라우저에 저장했습니다.";
+    } catch (error) {
+      status.classList.add("error");
+      status.textContent = error.message;
+    }
+  });
+  $("#exportGenerationTxtBtn").addEventListener("click", () => {
+    const status = $("#generationSaveStatus");
+    try {
+      if (!currentGeneration) throw new Error("먼저 후보를 생성해 주세요.");
+      downloadGenerationText(currentGeneration);
+      status.classList.remove("error");
+      status.textContent = "현재 생성 결과를 TXT 파일로 내보냈습니다.";
+    } catch (error) {
+      status.classList.add("error");
+      status.textContent = error.message;
+    }
+  });
+  $("#savedGenerationList").addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    const row = event.target.closest(".saved-generation");
+    if (!button || !row) return;
+    const records = loadSavedGenerations();
+    const record = records.find((item) => item.id === row.dataset.id);
+    if (!record) return;
+    if (button.matches("[data-export-saved]")) {
+      downloadGenerationText(record);
+      return;
+    }
+    if (button.matches("[data-delete-saved]") && window.confirm("이 저장 결과를 삭제할까요?")) {
+      saveSavedGenerations(records.filter((item) => item.id !== record.id));
+      renderSavedGenerations();
+      $("#generationSaveStatus").textContent = "저장 결과를 삭제했습니다.";
+    }
+  });
+  renderSavedGenerations();
   $("#qpBtn").addEventListener("click", () => {
     const pool = Array.from({ length: 45 }, (_, i) => i + 1);
     const nums = sample(pool, 6).sort((a, b) => a - b);

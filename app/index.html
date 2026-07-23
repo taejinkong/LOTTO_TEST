@@ -95,7 +95,7 @@
       <h2 id="generatorTitle">다음 회차 후보 생성</h2>
       <p class="muted">기본 패턴·전이·조건부 규칙·개별 번호·페어·출현주기를 함께 평가해 상위 조합을 표시합니다.</p>
       <div class="controls">
-        <label>생성 개수<input type="number" id="genCount" value="6" min="1" max="20" /></label>
+        <label>생성 개수<input type="number" id="genCount" value="6" min="1" max="100" /></label>
         <label>후보 풀<select id="genPool"><option value="10000">10,000개</option><option value="30000" selected>30,000개</option><option value="60000">60,000개</option></select></label>
         <label>점수 모델<select id="genModel"><option value="integrated" selected>전체 규칙 통합 v2</option><option value="legacy">페어+주기 v1</option></select></label>
         <label>시나리오<select id="genScenario"><option value="all">전체</option></select></label>
@@ -125,6 +125,20 @@
       </div>
       <button class="primary slim" id="lockBtn">예측 잠금</button>
       <span class="save-status" id="lockStatus"></span>
+    </div>
+    <div class="card generation-save-card" id="generationSaveCard" hidden>
+      <div class="generation-save-head">
+        <div>
+          <h3>생성 번호 저장·내보내기</h3>
+          <p class="muted">현재 결과를 이 브라우저에 보관하거나, 회차·조건과 번호가 정리된 텍스트 파일로 내려받습니다.</p>
+        </div>
+        <div class="result-actions">
+          <button class="primary slim" id="saveGenerationBtn">현재 결과 저장</button>
+          <button class="ghost slim" id="exportGenerationTxtBtn">현재 결과 TXT</button>
+        </div>
+      </div>
+      <span class="save-status" id="generationSaveStatus"></span>
+      <div id="savedGenerationList"></div>
     </div>
     <div class="card subtle"><button class="ghost" id="qpBtn">완전 무작위 1장</button><div id="qpResult"></div></div>
   </section>
