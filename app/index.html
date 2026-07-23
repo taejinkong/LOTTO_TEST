@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="로또 분석" />
 <link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon-192.png" />
 <link rel="apple-touch-icon" href="icon-192.png" />
 <link rel="stylesheet" href="styles.css" />
 <title>로또 데이터 분석과 번호 생성</title>
@@ -18,13 +19,14 @@
       <span class="logo" aria-hidden="true">45</span>
       <div class="brand-txt">
         <h1>로또 분석</h1>
-        <span class="sub">공식 당첨 데이터 · 페어·주기 점수 기반 후보 생성</span>
+        <span class="sub">공식 당첨 데이터 · 전체 분석 규칙 통합 후보 생성</span>
       </div>
     </div>
     <nav class="topnav" id="topnav" aria-label="주요 화면">
       <button data-tab="dashboard" class="active">대시보드</button>
       <button data-tab="generate">번호 생성</button>
       <button data-tab="backtest">모델 검증</button>
+      <button data-tab="ledger">예측 원장</button>
       <button data-tab="insights">인사이트</button>
     </nav>
     <div class="updated" id="updated">업데이트: -</div>
@@ -91,28 +93,46 @@
   <section class="tab" id="tab-generate" hidden>
     <div class="card hero">
       <h2 id="generatorTitle">다음 회차 후보 생성</h2>
-      <p class="muted">Python 생성기와 같은 페어·주기 점수로 무작위 후보 풀을 평가해 상위 조합을 표시합니다.</p>
+      <p class="muted">기본 패턴·전이·조건부 규칙·개별 번호·페어·출현주기를 함께 평가해 상위 조합을 표시합니다.</p>
       <div class="controls">
         <label>생성 개수<input type="number" id="genCount" value="6" min="1" max="20" /></label>
         <label>후보 풀<select id="genPool"><option value="10000">10,000개</option><option value="30000" selected>30,000개</option><option value="60000">60,000개</option></select></label>
+        <label>점수 모델<select id="genModel"><option value="integrated" selected>전체 규칙 통합 v2</option><option value="legacy">페어+주기 v1</option></select></label>
         <label>시나리오<select id="genScenario"><option value="all">전체</option></select></label>
         <label class="check"><input type="checkbox" id="genNoConsec" /> 연속번호 제외</label>
+        <label class="check"><input type="checkbox" id="genDiversify" checked /> 조합 간 중복 최대 4개</label>
       </div>
       <div class="controls">
         <label class="grow">고정 번호<input type="text" id="genFix" placeholder="예: 17, 33" inputmode="numeric" /></label>
         <label class="grow">제외 번호<input type="text" id="genExclude" placeholder="예: 7, 13" inputmode="numeric" /></label>
+        <label class="grow">재현 시드<input type="text" id="genSeed" placeholder="예: 1234 또는 메모" autocomplete="off" /></label>
       </div>
+      <div class="model-help" id="modelHelp"></div>
+      <details class="experiment-panel">
+        <summary>선택형 실험 필터 <span id="experimentSummary">0개 사용 · 기본값 꺼짐</span></summary>
+        <p class="muted">전형적인 모양을 강제하면 실제 당첨조합도 제외됩니다. 아래 필터는 통합 점수와 별개이며 직접 선택한 경우에만 적용됩니다.</p>
+        <div id="experimentRules"></div>
+        <div class="callout warn compact" id="experimentRisk"></div>
+      </details>
       <button class="primary" id="genBtn">후보 생성</button>
       <p class="error" id="genError" hidden></p>
     </div>
     <div id="genResults"></div>
+    <div class="card lock-card" id="lockCard" hidden>
+      <div>
+        <h3>이 결과를 예측 원장에 잠그기</h3>
+        <p class="muted">대상 회차·데이터 기준·모델·조건·시드·조합을 함께 저장합니다. 저장된 원본은 수정하지 않고 추첨 결과만 자동 판정합니다.</p>
+      </div>
+      <button class="primary slim" id="lockBtn">예측 잠금</button>
+      <span class="save-status" id="lockStatus"></span>
+    </div>
     <div class="card subtle"><button class="ghost" id="qpBtn">완전 무작위 1장</button><div id="qpResult"></div></div>
   </section>
 
   <section class="tab" id="tab-backtest" hidden>
     <div class="card">
       <h2>워크포워드 백테스트</h2>
-      <p class="muted">각 검증 회차 직전 데이터만 학습해 실제 당첨 조합의 전체 조합 내 백분위를 비교했습니다.</p>
+      <p class="muted">각 검증 회차 직전 데이터만 학습하고 표본으로 실제 당첨 조합의 전체 조합 내 백분위를 추정했습니다.</p>
       <div id="btTable"></div><div id="btCompare" class="callout warn"></div>
     </div>
     <div class="card">
@@ -120,13 +140,33 @@
       <div id="btStability"></div>
     </div>
     <div class="card">
+      <h3>규칙별 배제 위험</h3>
+      <p class="muted">통과율은 예측력이 아니라 해당 규칙이 후보와 과거 당첨조합을 얼마나 남기는지 보여줍니다.</p>
+      <div id="ruleRiskTable"></div>
+      <div id="ruleRiskNote" class="callout warn"></div>
+    </div>
+    <div class="card">
       <h3>회차 조회</h3>
       <div class="controls">
-        <label class="grow">회차 번호<input type="number" id="lookupRound" placeholder="예: 1232" inputmode="numeric" /></label>
+        <label class="grow">회차 번호<input type="number" id="lookupRound" placeholder="예: 1233" inputmode="numeric" /></label>
         <button class="primary slim" id="lookupBtn">조회</button>
       </div>
       <div id="lookupResult"></div>
     </div>
+  </section>
+
+  <section class="tab" id="tab-ledger" hidden>
+    <div class="card intro ledger-head">
+      <div>
+        <h2>예측 원장</h2>
+        <p class="muted">추첨 전에 잠근 생성 결과와 SHA-256 영수증을 이 브라우저에 보관합니다. 앱 데이터가 갱신되면 1~5등 기준으로 자동 채점합니다.</p>
+      </div>
+      <button class="ghost slim" id="exportLedgerBtn">JSON 내보내기</button>
+    </div>
+    <div class="card callout warn ledger-warning">
+      브라우저를 초기화하면 로컬 원장이 사라질 수 있습니다. 중요한 기록은 JSON으로 내보내 별도 보관하세요.
+    </div>
+    <div id="ledgerList"></div>
   </section>
 
   <section class="tab" id="tab-insights" hidden>

@@ -25,11 +25,14 @@ from statistics import mean, median
 
 from lotto_analyzer import Draw, load_draws, odd_even
 from lotto_prediction import (
+    SCORE_WEIGHTS,
+    build_distribution_scores,
     build_cycle_scores,
     build_number_scores,
     build_pair_scores,
     build_raw_target_scores,
     candidate_target_features,
+    canonical_score_parts,
     high_value,
     low_value,
     normalize_target_scores,
@@ -59,6 +62,7 @@ class AblationConfig:
     use_number: bool = True
     use_pair: bool = True
     use_cycle: bool = True
+    integrated: bool = False
 
 
 ABLATION_PRESETS: dict[str, AblationConfig] = {
@@ -77,12 +81,14 @@ ABLATION_PRESETS: dict[str, AblationConfig] = {
     "only_num":   AblationConfig("only_num",   use_pattern=False, use_pair=False, use_cycle=False),      # number만
     "only_pair":  AblationConfig("only_pair",  use_pattern=False, use_number=False, use_cycle=False),    # pair만
     "only_cyc":   AblationConfig("only_cyc",   use_pattern=False, use_number=False, use_pair=False),     # cycle만
+    "integrated_v2": AblationConfig("integrated_v2", integrated=True),
 }
 
 # 묶음 실행용 그룹
 ABLATION_GROUPS: dict[str, list[str]] = {
     "all":    ["baseline", "no_cycle", "no_pair", "no_number", "no_pattern", "only_pattern"],
     "stage2": ["np_all", "np_no_num", "np_no_pair", "np_no_cyc", "only_num", "only_pair", "only_cyc"],
+    "models": ["np_no_num", "integrated_v2"],
 }
 
 
@@ -153,7 +159,22 @@ def score_combo(
     pair_scores: dict[tuple[int, int], float],
     cycle_scores: dict[int, float],
     previous_oe: str | None,
+    distribution_scores: dict[str, float] | None = None,
+    previous_numbers: tuple[int, ...] | None = None,
 ) -> float:
+    if config.integrated:
+        return canonical_score_parts(
+            numbers,
+            pair_scores,
+            cycle_scores,
+            previous_oe,
+            distribution_scores=distribution_scores,
+            conditional_scores=normalized_scores,
+            number_scores=number_scores,
+            previous_numbers=previous_numbers,
+            weights=SCORE_WEIGHTS,
+        )["total"]
+
     features = candidate_target_features(numbers)
     pattern = sum(normalized_scores.get(f, 0.0) for f in features)         if config.use_pattern else 0.0
     number  = sum(number_scores[n] for n in numbers) / 6                   if config.use_number  else 0.0
@@ -274,6 +295,7 @@ def run_single_round(
         training_draws, max_conditions, min_support, min_confidence, min_lift
     )
     normalized_scores = normalize_target_scores(raw_scores)
+    distribution_scores = build_distribution_scores(training_draws)
     number_scores     = build_number_scores(training_draws, recent_window)
     pair_scores       = build_pair_scores(training_draws, recent_window)
     cycle_scores      = build_cycle_scores(training_draws)
@@ -290,6 +312,7 @@ def run_single_round(
             score_combo(
                 nums, config, normalized_scores, number_scores,
                 pair_scores, cycle_scores, previous_oe,
+                distribution_scores, training_draws[-1].numbers,
             ),
             nums,
         )

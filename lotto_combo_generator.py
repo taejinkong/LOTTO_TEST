@@ -10,10 +10,12 @@ from pathlib import Path
 
 from lotto_analyzer import load_draws, odd_even
 from lotto_prediction import (
+    LEGACY_MODEL_NAME,
+    LEGACY_SCORE_WEIGHTS,
     MODEL_NAME,
     SCENARIOS,
-    build_cycle_scores,
-    build_pair_scores,
+    SCORE_WEIGHTS,
+    build_prediction_inputs,
     canonical_score_parts,
     matches_scenario,
 )
@@ -59,7 +61,12 @@ def generate_candidates(
     history: set[tuple[int, ...]],
     pair_scores: dict[tuple[int, int], float],
     cycle_scores: dict[int, float],
+    distribution_scores: dict[str, float],
+    conditional_scores: dict[str, float],
+    number_scores: dict[int, float],
     previous_oe: str,
+    previous_numbers: tuple[int, ...],
+    model_name: str,
 ) -> list[tuple[dict[str, float], tuple[int, ...]]]:
     rng = random.Random(seed)
     selectable = [number for number in range(1, 46) if number not in fixed | excluded]
@@ -78,7 +85,18 @@ def generate_candidates(
             continue
         if scenario is not None and not matches_scenario(numbers, scenario):
             continue
-        found[numbers] = canonical_score_parts(numbers, pair_scores, cycle_scores, previous_oe)
+        integrated = model_name == MODEL_NAME
+        found[numbers] = canonical_score_parts(
+            numbers,
+            pair_scores,
+            cycle_scores,
+            previous_oe,
+            distribution_scores=distribution_scores if integrated else None,
+            conditional_scores=conditional_scores if integrated else None,
+            number_scores=number_scores if integrated else None,
+            previous_numbers=previous_numbers if integrated else None,
+            weights=SCORE_WEIGHTS if integrated else LEGACY_SCORE_WEIGHTS,
+        )
     if not found:
         raise RuntimeError("조건을 만족하는 조합을 찾지 못했습니다. 제약을 완화하세요.")
     ranked = sorted(((parts, numbers) for numbers, parts in found.items()), key=lambda item: item[0]["total"], reverse=True)
@@ -90,6 +108,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv", default="lotto_winners_2020_2026.csv")
     parser.add_argument("--count", type=int, default=6, help="출력 조합 수")
     parser.add_argument("--pool-size", type=int, default=30_000, help="점수화할 무작위 후보 수")
+    parser.add_argument(
+        "--model",
+        choices=[MODEL_NAME, LEGACY_MODEL_NAME],
+        default=MODEL_NAME,
+        help="통합 규칙 v2 또는 기존 페어+주기 v1",
+    )
     parser.add_argument("--scenario", choices=["all", *(item.name for item in SCENARIOS)], default="all")
     parser.add_argument("--fix", default="", help="고정수, 쉼표 구분")
     parser.add_argument("--exclude", default="", help="제외수, 쉼표 구분")
@@ -105,8 +129,20 @@ def main() -> None:
     excluded = parse_number_set(args.exclude)
     validate(fixed, excluded, args.count, args.pool_size)
     draws = load_draws(Path(args.csv))
-    pair_scores = build_pair_scores(draws, args.recent_window)
-    cycle_scores = build_cycle_scores(draws)
+    (
+        distribution_scores,
+        conditional_scores,
+        number_scores,
+        pair_scores,
+        cycle_scores,
+    ) = build_prediction_inputs(
+        draws,
+        max_conditions=2,
+        min_support=15,
+        min_confidence=0.45,
+        min_lift=1.25,
+        recent_window=args.recent_window,
+    )
     ranked = generate_candidates(
         count=args.count,
         pool_size=args.pool_size,
@@ -118,13 +154,20 @@ def main() -> None:
         history={draw.numbers for draw in draws},
         pair_scores=pair_scores,
         cycle_scores=cycle_scores,
+        distribution_scores=distribution_scores,
+        conditional_scores=conditional_scores,
+        number_scores=number_scores,
         previous_oe=odd_even(draws[-1].numbers),
+        previous_numbers=draws[-1].numbers,
+        model_name=args.model,
     )
-    print(f"기준: {draws[0].round_no}~{draws[-1].round_no}회 | 모델: {MODEL_NAME} | 대상: {draws[-1].round_no + 1}회")
+    print(f"기준: {draws[0].round_no}~{draws[-1].round_no}회 | 모델: {args.model} | 대상: {draws[-1].round_no + 1}회")
     print(f"후보 풀: {args.pool_size:,}개 | 시나리오: {args.scenario} | 1등 확률: 각 1/8,145,060")
     for rank, (parts, numbers) in enumerate(ranked, 1):
         print(
             f"{rank:>2}. {list(numbers)} score={parts['total']:.6f} "
+            f"pattern={parts['pattern']:.4f} transition={parts['transition']:.4f} "
+            f"conditional={parts['conditional']:.4f} number={parts['number']:.4f} "
             f"pair={parts['pair']:.4f} cycle={parts['cycle']:.4f} penalty={parts['penalty']:.2f}"
         )
     print("주의: 백테스트 순위 점수이며 당첨을 보장하거나 개별 조합 확률을 높이지 않습니다.")

@@ -9,26 +9,27 @@ from itertools import combinations
 
 from lotto_analyzer import (
     Draw,
-    Rule,
-    ac_bin,
-    color_pattern,
-    consecutive_pattern,
     feature_set,
-    first_number_bin,
-    gap_pattern,
-    high_count,
-    low_count,
     matching_rules,
     mine_rules,
     odd_even,
-    sum_bin,
+    target_features,
     target_family,
 )
 
 
 RARE_OE_PATTERNS = {"OE=5:1", "OE=1:5", "OE=6:0", "OE=0:6"}
-MODEL_NAME = "pair_cycle_v1"
-SCORE_WEIGHTS = {"pattern": 0.0, "number": 0.0, "pair": 0.14, "cycle": 0.08}
+MODEL_NAME = "integrated_rules_v2"
+LEGACY_MODEL_NAME = "pair_cycle_v1"
+SCORE_WEIGHTS = {
+    "pattern": 0.03,
+    "transition": 0.02,
+    "conditional": 0.04,
+    "number": 0.03,
+    "pair": 0.56,
+    "cycle": 0.32,
+}
+LEGACY_SCORE_WEIGHTS = {"pair": 0.14, "cycle": 0.08}
 RARE_AFTER_RARE_PENALTY = 0.35
 
 
@@ -57,18 +58,28 @@ SCENARIOS = [
 ]
 
 
-def candidate_target_features(numbers: tuple[int, ...]) -> list[str]:
-    return [
-        odd_even(numbers),
-        color_pattern(numbers),
-        sum_bin(numbers),
-        low_count(numbers),
-        high_count(numbers),
-        consecutive_pattern(numbers),
-        ac_bin(numbers),
-        gap_pattern(numbers),
-        first_number_bin(numbers),
+def candidate_target_features(
+    numbers: tuple[int, ...],
+    previous_numbers: tuple[int, ...] | None = None,
+) -> list[str]:
+    """Return the same full feature set used by the rule miner."""
+    candidate = Draw(0, "", numbers, 0)
+    previous = Draw(-1, "", previous_numbers, 0) if previous_numbers else None
+    return target_features(candidate, previous)
+
+
+def split_candidate_features(
+    numbers: tuple[int, ...],
+    previous_numbers: tuple[int, ...] | None = None,
+) -> tuple[list[str], list[str]]:
+    features = candidate_target_features(numbers, previous_numbers)
+    transition = [
+        feature
+        for feature in features
+        if feature.startswith("CARRY=") or feature.startswith("NEIGHBOR=")
     ]
+    static = [feature for feature in features if feature not in transition]
+    return static, transition
 
 
 def low_value(numbers: tuple[int, ...]) -> int:
@@ -140,6 +151,24 @@ def normalize_target_scores(raw_scores: dict[str, float]) -> dict[str, float]:
     return normalized
 
 
+def build_distribution_scores(training_draws: list[Draw]) -> dict[str, float]:
+    """Score historical pattern prevalence, normalized within each family."""
+    counts: Counter[str] = Counter()
+    max_by_family: dict[str, int] = defaultdict(int)
+    for index, draw in enumerate(training_draws):
+        previous = training_draws[index - 1] if index > 0 else None
+        for feature in target_features(draw, previous):
+            counts[feature] += 1
+    for feature, count in counts.items():
+        family = target_family(feature)
+        max_by_family[family] = max(max_by_family[family], count)
+    return {
+        feature: count / max_by_family[target_family(feature)]
+        for feature, count in counts.items()
+        if max_by_family[target_family(feature)]
+    }
+
+
 def build_number_scores(training_draws: list[Draw], recent_window: int) -> dict[int, float]:
     all_counts = Counter(number for draw in training_draws for number in draw.numbers)
     recent_draws = training_draws[-recent_window:]
@@ -209,24 +238,21 @@ def score_candidate(
     cycle_scores: dict[int, float] | None = None,
     previous_oe: str | None = None,
     rare_after_rare_penalty: float = RARE_AFTER_RARE_PENALTY,
+    distribution_scores: dict[str, float] | None = None,
+    previous_numbers: tuple[int, ...] | None = None,
 ) -> float:
-    pattern_score = sum(target_scores.get(feature, 0) for feature in candidate_target_features(numbers))
-    number_score = sum(number_scores[number] for number in numbers) / 6
-    pair_score = 0.0
-    if pair_scores:
-        pair_score = sum(pair_scores[pair] for pair in combinations(numbers, 2)) / 15
-    cycle_score = 0.0
-    if cycle_scores:
-        cycle_score = sum(cycle_scores[number] for number in numbers) / 6
-    score = (
-        pattern_score * SCORE_WEIGHTS["pattern"]
-        + number_score * SCORE_WEIGHTS["number"]
-        + pair_score * SCORE_WEIGHTS["pair"]
-        + cycle_score * SCORE_WEIGHTS["cycle"]
+    parts = canonical_score_parts(
+        numbers,
+        pair_scores or {},
+        cycle_scores or {},
+        previous_oe,
+        rare_after_rare_penalty,
+        distribution_scores=distribution_scores,
+        conditional_scores=target_scores,
+        number_scores=number_scores,
+        previous_numbers=previous_numbers,
     )
-    if previous_oe in RARE_OE_PATTERNS and odd_even(numbers) in RARE_OE_PATTERNS:
-        score -= rare_after_rare_penalty
-    return score
+    return parts["total"]
 
 
 def canonical_score_parts(
@@ -235,20 +261,64 @@ def canonical_score_parts(
     cycle_scores: dict[int, float],
     previous_oe: str | None = None,
     rare_after_rare_penalty: float = RARE_AFTER_RARE_PENALTY,
+    *,
+    distribution_scores: dict[str, float] | None = None,
+    conditional_scores: dict[str, float] | None = None,
+    number_scores: dict[int, float] | None = None,
+    previous_numbers: tuple[int, ...] | None = None,
+    weights: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Return the exact score components shared by the CLI and web app."""
-    pair = sum(pair_scores[item] for item in combinations(numbers, 2)) / 15
-    cycle = sum(cycle_scores[number] for number in numbers) / 6
+    """Return the exact integrated score components shared by CLI and web."""
+    active_weights = weights or SCORE_WEIGHTS
+    static_features, transition_features = split_candidate_features(numbers, previous_numbers)
+    all_features = [*static_features, *transition_features]
+
+    def average(feature_scores: dict[str, float] | None, features: list[str]) -> float:
+        if not feature_scores or not features:
+            return 0.0
+        return sum(feature_scores.get(feature, 0.0) for feature in features) / len(features)
+
+    pattern = average(distribution_scores, static_features)
+    transition = average(distribution_scores, transition_features)
+    conditional = average(conditional_scores, all_features)
+    number = (
+        sum(number_scores.get(item, 0.0) for item in numbers) / 6
+        if number_scores
+        else 0.0
+    )
+    pair = (
+        sum(pair_scores.get(item, 0.0) for item in combinations(numbers, 2)) / 15
+        if pair_scores
+        else 0.0
+    )
+    cycle = (
+        sum(cycle_scores.get(item, 0.0) for item in numbers) / 6
+        if cycle_scores
+        else 0.0
+    )
     penalty = (
         rare_after_rare_penalty
         if previous_oe in RARE_OE_PATTERNS and odd_even(numbers) in RARE_OE_PATTERNS
         else 0.0
     )
+    total = (
+        pattern * active_weights.get("pattern", 0.0)
+        + transition * active_weights.get("transition", 0.0)
+        + conditional * active_weights.get("conditional", 0.0)
+        + number * active_weights.get("number", 0.0)
+        + pair * active_weights.get("pair", 0.0)
+        + cycle * active_weights.get("cycle", 0.0)
+        - penalty
+    )
     return {
+        "pattern": pattern,
+        "transition": transition,
+        "conditional": conditional,
+        "number": number,
         "pair": pair,
         "cycle": cycle,
         "penalty": penalty,
-        "total": pair * SCORE_WEIGHTS["pair"] + cycle * SCORE_WEIGHTS["cycle"] - penalty,
+        "total": total,
     }
 
 
@@ -260,6 +330,8 @@ def top_candidates_by_scenario(
     cycle_scores: dict[int, float] | None = None,
     previous_oe: str | None = None,
     rare_after_rare_penalty: float = RARE_AFTER_RARE_PENALTY,
+    distribution_scores: dict[str, float] | None = None,
+    previous_numbers: tuple[int, ...] | None = None,
 ) -> dict[str, list[tuple[float, tuple[int, ...]]]]:
     heaps: dict[str, list[tuple[float, tuple[int, ...]]]] = {scenario.name: [] for scenario in SCENARIOS}
 
@@ -272,6 +344,8 @@ def top_candidates_by_scenario(
             cycle_scores=cycle_scores,
             previous_oe=previous_oe,
             rare_after_rare_penalty=rare_after_rare_penalty,
+            distribution_scores=distribution_scores,
+            previous_numbers=previous_numbers,
         )
         for scenario in SCENARIOS:
             if not matches_scenario(numbers, scenario):
@@ -292,7 +366,13 @@ def build_prediction_inputs(
     min_confidence: float = 0.45,
     min_lift: float = 1.25,
     recent_window: int = 50,
-) -> tuple[dict[str, float], dict[int, float], dict[tuple[int, int], float], dict[int, float]]:
+) -> tuple[
+    dict[str, float],
+    dict[str, float],
+    dict[int, float],
+    dict[tuple[int, int], float],
+    dict[int, float],
+]:
     raw_scores = build_raw_target_scores(
         training_draws=training_draws,
         max_conditions=max_conditions,
@@ -301,6 +381,7 @@ def build_prediction_inputs(
         min_lift=min_lift,
     )
     return (
+        build_distribution_scores(training_draws),
         normalize_target_scores(raw_scores),
         build_number_scores(training_draws, recent_window),
         build_pair_scores(training_draws, recent_window),

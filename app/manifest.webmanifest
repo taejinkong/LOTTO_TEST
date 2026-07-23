@@ -1,7 +1,7 @@
 {
   "name": "로또 데이터 분석과 번호 생성",
   "short_name": "로또분석",
-  "description": "동행복권 공식 데이터와 페어·출현주기 점수로 후보 조합을 생성하는 분석 앱.",
+  "description": "공식 데이터 기반 후보 생성, 재현 시드, 규칙 위험도와 예측 원장을 제공하는 로또 분석 앱.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

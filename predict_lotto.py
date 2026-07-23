@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv", default="lotto_winners_2020_2026.csv", help="Input CSV path.")
     parser.add_argument("--per-scenario", type=int, default=5, help="Candidates to print per scenario.")
     parser.add_argument("--recent-window", type=int, default=50, help="Recent draw window for number scores.")
-    parser.add_argument("--max-conditions", type=int, default=3, help="Maximum IF conditions.")
+    parser.add_argument("--max-conditions", type=int, default=2, help="Maximum IF conditions.")
     parser.add_argument("--min-support", type=int, default=15, help="Minimum rule support.")
     parser.add_argument("--min-confidence", type=float, default=0.45, help="Minimum rule confidence.")
     parser.add_argument("--min-lift", type=float, default=1.25, help="Minimum rule lift.")
@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     draws = load_draws(Path(args.csv))
-    target_scores, number_scores, pair_scores, cycle_scores = build_prediction_inputs(
+    distribution_scores, target_scores, number_scores, pair_scores, cycle_scores = build_prediction_inputs(
         training_draws=draws,
         max_conditions=args.max_conditions,
         min_support=args.min_support,
@@ -40,6 +40,8 @@ def main() -> None:
         pair_scores=pair_scores,
         cycle_scores=cycle_scores,
         previous_oe=odd_even(draws[-1].numbers),
+        distribution_scores=distribution_scores,
+        previous_numbers=draws[-1].numbers,
     )
 
     latest = draws[-1]

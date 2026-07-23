@@ -195,19 +195,17 @@ def feature_set(draws: list[Draw], index: int) -> list[str]:
     return features
 
 
-def target_features(draw: Draw) -> list[str]:
-    numbers = draw.numbers
-    return [
-        odd_even(numbers),
-        color_pattern(numbers),
-        sum_bin(numbers),
-        low_count(numbers),
-        high_count(numbers),
-        consecutive_pattern(numbers),
-        ac_bin(numbers),
-        gap_pattern(numbers),
-        first_number_bin(numbers),
-    ]
+def target_features(draw: Draw, previous: Draw | None = None) -> list[str]:
+    """Return every analyzable feature that a candidate draw can satisfy.
+
+    Older versions only exposed nine coarse pattern families as prediction
+    targets.  The integrated model also scores tail duplication, per-band
+    counts/presence, carry-over numbers, and neighbours of the previous draw.
+    """
+    features = draw_features(draw)
+    if previous is not None:
+        features.extend(transition_features(previous, draw))
+    return features
 
 
 def target_family(feature: str) -> str:
@@ -223,8 +221,8 @@ def mine_rules(
 ) -> list[Rule]:
     base_counts = Counter()
     family_totals = Counter()
-    for draw in draws[2:]:
-        for target in target_features(draw):
+    for index in range(2, len(draws)):
+        for target in target_features(draws[index], draws[index - 1]):
             base_counts[target] += 1
             family_totals[target_family(target)] += 1
 
@@ -233,7 +231,7 @@ def mine_rules(
 
     for index in range(1, len(draws) - 1):
         source_features = feature_set(draws, index)
-        next_targets = target_features(draws[index + 1])
+        next_targets = target_features(draws[index + 1], draws[index])
         for condition_count in range(1, max_conditions + 1):
             for antecedent in combinations(source_features, condition_count):
                 support_counts[antecedent] += 1
