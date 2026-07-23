@@ -269,6 +269,31 @@ button { font-family: inherit; cursor: pointer; border: none; font-size: 15px; }
 .lock-card h3 { margin-bottom: 4px; }
 .lock-card .muted { margin-bottom: 0; }
 .save-status { color: var(--good); font-size: 12px; font-weight: 700; }
+.save-status.error { color: var(--bad); }
+.generation-save-card { display: flex; flex-direction: column; gap: 12px; }
+.generation-save-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+}
+.generation-save-head > div:first-child { flex: 1 1 360px; }
+.generation-save-head h3 { margin-bottom: 4px; }
+.generation-save-head .muted { margin-bottom: 0; }
+.result-actions, .saved-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.saved-title { color: var(--muted); font-size: 11px; font-weight: 700; margin-bottom: 4px; }
+.saved-empty {
+  padding: 14px; border: 1px dashed var(--line); border-radius: 9px;
+  color: var(--muted); font-size: 12px; text-align: center;
+}
+.saved-generation {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 0; border-top: 1px solid var(--line2);
+}
+.saved-generation > div:first-child { min-width: 0; }
+.saved-generation b { display: block; font-size: 13px; }
+.saved-generation span {
+  display: block; margin-top: 3px; color: var(--muted); font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+.ghost.danger { color: var(--bad); }
 
 /* ── Backtest tables / bars ────────────── */
 .bt-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -547,6 +572,13 @@ button { font-family: inherit; cursor: pointer; border: none; font-size: 15px; }
   #drawTable .balls { flex-wrap: nowrap; gap: 4px; }
   #drawTable .ball { width: 28px; height: 28px; }
   .ledger-head { align-items: stretch; flex-direction: column; }
+  .generation-save-head { align-items: stretch; flex-direction: column; }
+  .generation-save-head > div:first-child { flex: 0 0 auto; width: 100%; }
+  .result-actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .result-actions .slim { width: 100%; min-width: 0; white-space: normal; }
+  .saved-generation { align-items: stretch; flex-direction: column; }
+  .saved-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .saved-actions .slim { width: 100%; }
   .ledger-head .ghost.slim { width: 100%; }
   .ledger-entry-head { padding: 12px; }
   .ledger-entry-body { padding: 12px; }
