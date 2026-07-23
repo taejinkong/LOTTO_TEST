@@ -256,10 +256,11 @@ function renderTable(rows) {
     .map((r) => {
       const total = numsOf(r).reduce((sum, number) => sum + number, 0);
       return (
-        `<tr><td><b>${r[0]}</b>회</td><td>${r[1]}</td>` +
-        `<td>${ballsHtml(numsOf(r))}</td>` +
-        `<td>${total}</td>` +
-        `<td>${oeOf(r)}</td><td>${winnersOf(r)}명</td><td class="amt">${amtOf(r)}억</td></tr>`
+        `<tr><td data-label="회차"><b>${r[0]}</b>회</td><td data-label="추첨일">${r[1]}</td>` +
+        `<td data-label="당첨번호">${ballsHtml(numsOf(r))}</td>` +
+        `<td data-label="합계">${total}</td>` +
+        `<td data-label="홀짝">${oeOf(r)}</td><td data-label="1등">${winnersOf(r)}명</td>` +
+        `<td data-label="1인당" class="amt">${amtOf(r)}억</td></tr>`
       );
     })
     .join("");
@@ -327,8 +328,12 @@ function bindFilters() {
 if (typeof document !== "undefined") {
   $$(".topnav button").forEach((btn) => {
     btn.addEventListener("click", () => {
-      $$(".topnav button").forEach((b) => b.classList.remove("active"));
+      $$(".topnav button").forEach((b) => {
+        b.classList.remove("active");
+        b.removeAttribute("aria-current");
+      });
       btn.classList.add("active");
+      btn.setAttribute("aria-current", "page");
       const tab = btn.dataset.tab;
       $$(".tab").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
       window.scrollTo({ top: 0, behavior: "smooth" });

@@ -23,11 +23,11 @@
       </div>
     </div>
     <nav class="topnav" id="topnav" aria-label="주요 화면">
-      <button data-tab="dashboard" class="active">대시보드</button>
-      <button data-tab="generate">번호 생성</button>
-      <button data-tab="backtest">모델 검증</button>
-      <button data-tab="ledger">예측 원장</button>
-      <button data-tab="insights">인사이트</button>
+      <button data-tab="dashboard" data-icon="⌂" class="active" aria-current="page">대시보드</button>
+      <button data-tab="generate" data-icon="＋">번호 생성</button>
+      <button data-tab="backtest" data-icon="✓">모델 검증</button>
+      <button data-tab="ledger" data-icon="▤">예측 원장</button>
+      <button data-tab="insights" data-icon="ⓘ">인사이트</button>
     </nav>
     <div class="updated" id="updated">업데이트: -</div>
   </div>
@@ -39,15 +39,15 @@
     <div class="card filterbar">
       <div class="filter-title">데이터 필터</div>
       <div class="filter-grid">
-        <label>회차 범위
+        <label class="filter-field">회차 범위
           <select id="fRange">
             <option value="0">전체</option><option value="500">최근 500회</option>
             <option value="300">최근 300회</option><option value="200" selected>최근 200회</option>
             <option value="100">최근 100회</option><option value="50">최근 50회</option>
           </select>
         </label>
-        <label>홀짝<select id="fOE"><option value="all">전체</option></select></label>
-        <label>포함 번호<input type="text" id="fInclude" placeholder="예: 34" inputmode="numeric" /></label>
+        <label class="filter-field">홀짝<select id="fOE"><option value="all">전체</option></select></label>
+        <label class="filter-field filter-wide">포함 번호<input type="text" id="fInclude" placeholder="예: 34" inputmode="numeric" /></label>
         <button class="reset" id="fReset">초기화</button>
       </div>
     </div>
