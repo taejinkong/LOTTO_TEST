@@ -1020,6 +1020,8 @@ function bindActions() {
     const nums = sample(pool, 6).sort((a, b) => a - b);
     $("#qpResult").innerHTML = `<div class="combo" style="margin-top:12px">${ballsHtml(nums, [], "lg")}<div class="tag">완전 무작위</div></div>`;
   });
+  // 예시 회차를 하드코딩해 두면 데이터가 갱신될 때마다 낡는다.
+  $("#lookupRound").placeholder = `예: ${D.meta.lastRound}`;
   $("#lookupBtn").addEventListener("click", () => {
     const r = parseInt($("#lookupRound").value, 10);
     const box = $("#lookupResult");
@@ -1042,6 +1044,7 @@ function init() {
   });
   bindFilters();
   bindActions();
+  renderNotes();
   renderDashboard();
   renderBacktest();
   renderLedger();
