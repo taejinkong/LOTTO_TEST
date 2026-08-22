@@ -80,6 +80,8 @@ main { max-width: 1320px; margin: 0 auto; padding: 18px; }
   display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px;
   margin-bottom: 14px;
 }
+/* 진단 타일은 4개라 화면 폭에 맞춰 스스로 접힌다. */
+.kpis.diagnostic { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .kpi {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 16px; text-align: center;

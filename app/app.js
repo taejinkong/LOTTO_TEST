@@ -520,54 +520,216 @@ function portfolioStats(combos) {
   }
   return { coverage, maxOverlap };
 }
+
+/* ── 포트폴리오 진단 ───────────────────────────────────────────────
+   기대 당첨 장수는 조합을 어떻게 고르든 장수 × 고정 확률로 동일하다.
+   설계로 바뀌는 것은 '전부 꽝' 확률(분산)뿐이므로 그 값을 함께 보여준다. */
+const TOTAL_COMBINATIONS = 8145060;
+const PRIZE_ODDS = [
+  { key: "first", label: "1등", ways: 1 },
+  { key: "second", label: "2등", ways: 6 },
+  { key: "third", label: "3등", ways: 228 },
+  { key: "fourth", label: "4등", ways: 11115 },
+  { key: "fifth", label: "5등", ways: 182780 },
+];
+const ANY_PRIZE_WAYS = PRIZE_ODDS.reduce((sum, item) => sum + item.ways, 0);
+function tripleCoverage(combos) {
+  const seen = new Set();
+  for (const { numbers } of combos) {
+    for (let a = 0; a < 4; a++) {
+      for (let b = a + 1; b < 5; b++) {
+        for (let c = b + 1; c < 6; c++) seen.add(numbers[a] * 10000 + numbers[b] * 100 + numbers[c]);
+      }
+    }
+  }
+  return seen.size;
+}
+function popcount32(value) {
+  let x = value - ((value >> 1) & 0x55555555);
+  x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+  x = (x + (x >> 4)) & 0x0f0f0f0f;
+  return (x * 0x01010101) >> 24;
+}
+function maskPair(numbers) {
+  let lo = 0, hi = 0;
+  for (const number of numbers) {
+    if (number <= 30) lo |= 1 << (number - 1);
+    else hi |= 1 << (number - 31);
+  }
+  return [lo, hi];
+}
+/* 시드 고정 몬테카를로. 같은 조합에는 항상 같은 값이 나온다. */
+function estimateNoPrizeRate(combos, trials = 30000) {
+  const masks = combos.map(({ numbers }) => maskPair(numbers));
+  const rng = createSeededRandom("portfolio-diagnostic");
+  const pool = Array.from({ length: 45 }, (_, i) => i + 1);
+  let zero = 0;
+  for (let t = 0; t < trials; t++) {
+    for (let i = 44; i > 38; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+    }
+    const [dlo, dhi] = maskPair(pool.slice(39));
+    let won = false;
+    for (let i = 0; i < masks.length; i++) {
+      if (popcount32(masks[i][0] & dlo) + popcount32(masks[i][1] & dhi) >= 3) { won = true; break; }
+    }
+    if (!won) zero++;
+  }
+  return { rate: zero / trials, trials };
+}
+function numberConcentration(combos, top = 5) {
+  const counts = new Map();
+  for (const { numbers } of combos) {
+    for (const number of numbers) counts.set(number, (counts.get(number) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .slice(0, top)
+    .map(([number, count]) => ({ number, count }));
+}
+function portfolioDiagnostics(combos) {
+  const lines = combos.length;
+  const triples = tripleCoverage(combos);
+  const { rate, trials } = estimateNoPrizeRate(combos);
+  return {
+    lines,
+    tripleCoverage: triples,
+    tripleCoverageMax: lines * 20,
+    tripleCoverageTotal: 14190,
+    noPrizeRate: rate,
+    noPrizeTrials: trials,
+    expectedWins: PRIZE_ODDS.map((item) => ({
+      label: item.label,
+      expected: lines * item.ways / TOTAL_COMBINATIONS,
+      oneIn: TOTAL_COMBINATIONS / (item.ways * lines),
+    })),
+    expectedAnyPrize: lines * ANY_PRIZE_WAYS / TOTAL_COMBINATIONS,
+    concentration: numberConcentration(combos),
+  };
+}
 function generateCombos({
-  count, poolSize, scenarioName, modelName, noConsec, diversify, fix, exclude, seed, activeRuleIds,
+  count, poolSize, scenarioName, modelName, noConsec, maxOverlap, fix, exclude, seed, activeRuleIds,
 }) {
   const fixed = new Set(fix), excluded = new Set(exclude);
+  const limit = Number.isFinite(maxOverlap) ? maxOverlap : null;
   if (fix.length > 6) throw new Error("고정 번호는 최대 6개입니다.");
   if (fix.some((number) => excluded.has(number))) throw new Error("고정 번호와 제외 번호가 겹칩니다.");
   if (!seed.trim()) throw new Error("재현 시드를 입력해 주세요.");
-  if (diversify && fix.length > 4) throw new Error("고정 번호가 5개 이상이면 조합 간 중복 최대 4개를 지킬 수 없습니다.");
+  if (limit !== null && fix.length > limit) {
+    throw new Error(`고정 번호 ${fix.length}개는 모든 조합에 함께 들어가므로 겹침 상한 ${limit}개를 지킬 수 없습니다. 고정을 줄이거나 상한을 올려 주세요.`);
+  }
   const available = Array.from({ length: 45 }, (_, i) => i + 1).filter((number) => !fixed.has(number) && !excluded.has(number));
   const needed = 6 - fix.length;
   if (needed > available.length) throw new Error("제외수가 너무 많아 조합을 만들 수 없습니다.");
   const scenario = D.prediction.scenarios.find((item) => item.name === scenarioName);
   const history = new Set(D.draws.map((row) => numsOf(row).join(",")));
-  const found = new Map();
-  const maxAttempts = Math.max(poolSize * 30, 20000);
-  const rng = createSeededRandom(seed);
-  let attempts = 0;
-  for (; attempts < maxAttempts && found.size < poolSize; attempts++) {
-    const numbers = [...fix, ...sample(available, needed, rng)].sort((a, b) => a - b);
-    const key = numbers.join(",");
-    if (found.has(key) || history.has(key)) continue;
-    if (noConsec && consecutiveCount(numbers) > 0) continue;
-    if (!matchesScenario(numbers, scenario)) continue;
-    if (!matchesExperimentalRules(numbers, activeRuleIds)) continue;
-    found.set(key, { numbers, parts: scoreParts(numbers, modelName) });
-  }
-  if (!found.size) throw new Error("조건을 만족하는 조합을 찾지 못했습니다.");
-  const ranked = [...found.values()].sort((a, b) => b.parts.total - a.parts.total);
-  let combos;
-  if (diversify) {
-    combos = [];
+
+  const buildPool = (size) => {
+    const found = new Map();
+    const maxAttempts = Math.max(size * 30, 20000);
+    const rng = createSeededRandom(seed);
+    let attempts = 0;
+    for (; attempts < maxAttempts && found.size < size; attempts++) {
+      const numbers = [...fix, ...sample(available, needed, rng)].sort((a, b) => a - b);
+      const key = numbers.join(",");
+      if (found.has(key) || history.has(key)) continue;
+      if (noConsec && consecutiveCount(numbers) > 0) continue;
+      if (!matchesScenario(numbers, scenario)) continue;
+      if (!matchesExperimentalRules(numbers, activeRuleIds)) continue;
+      found.set(key, { numbers, parts: scoreParts(numbers, modelName) });
+    }
+    return { found, attempts };
+  };
+  const select = (ranked) => {
+    if (limit === null) return ranked.slice(0, count);
+    const picked = [];
     for (const candidate of ranked) {
-      if (combos.every((selected) => overlapCount(candidate.numbers, selected.numbers) <= 4)) {
-        combos.push(candidate);
-        if (combos.length === count) break;
+      if (picked.every((selected) => overlapCount(candidate.numbers, selected.numbers) <= limit)) {
+        picked.push(candidate);
+        if (picked.length === count) break;
       }
     }
-    if (combos.length < count) {
-      throw new Error(`중복 제한을 지키며 ${count}개를 만들지 못했습니다. 후보 풀을 늘리거나 조건을 완화해 주세요.`);
+    return picked;
+  };
+
+  /* 겹침 상한이 빡빡하면 요청한 장수를 못 채운다. 후보 풀을 자동으로 넓혀 본다. */
+  const sizes = [poolSize];
+  if (limit !== null) {
+    for (const bigger of [poolSize * 2, poolSize * 4]) {
+      if (bigger <= 240000 && !sizes.includes(bigger)) sizes.push(bigger);
     }
-  } else {
-    combos = ranked.slice(0, count);
   }
-  return { combos, generatedPoolSize: found.size, attempts, ...portfolioStats(combos) };
+  let best = null;
+  for (const size of sizes) {
+    const { found, attempts } = buildPool(size);
+    if (!found.size) continue;
+    const ranked = [...found.values()].sort((a, b) => b.parts.total - a.parts.total);
+    const combos = select(ranked);
+    const result = { combos, generatedPoolSize: found.size, attempts, poolSizeUsed: size };
+    if (!best || combos.length > best.combos.length) best = result;
+    if (combos.length === count) break;
+  }
+  if (!best || !best.combos.length) throw new Error("조건을 만족하는 조합을 찾지 못했습니다.");
+  if (best.combos.length < count) {
+    const cause = fix.length
+      ? `고정 번호 ${fix.join(", ")}가 모든 조합에 들어가 겹침 여유가 ${Math.max(0, limit - fix.length)}개뿐입니다. 고정을 빼거나, `
+      : "";
+    throw new Error(`겹침 상한 ${limit}개를 지키며 ${count}개를 만들지 못했습니다(${best.combos.length}개까지 가능). ${cause}상한을 올리거나 장수를 줄여 주세요.`);
+  }
+  return {
+    ...best,
+    ...portfolioStats(best.combos),
+    diagnostics: portfolioDiagnostics(best.combos),
+  };
 }
 let currentGeneration = null;
+function renderDiagnostics(diagnostics, settings) {
+  const card = el("div", "card");
+  card.appendChild(el("h3", null, "구매 전 포트폴리오 진단"));
+  card.appendChild(el("p", "muted",
+    "조합을 어떻게 고르든 <b>기대 당첨 장수는 장수 × 고정 확률로 같습니다</b>. " +
+    "설계로 바뀌는 것은 '한 장도 못 맞출 확률'뿐입니다. 겹침이 작을수록 서로 다른 3개-조합을 " +
+    "많이 덮어 전멸 확률이 내려가고, 대신 맞을 때 동시에 맞는 장수는 줄어듭니다."));
+  const pct = (value) => `${(value * 100).toFixed(value < 0.01 ? 2 : 1)}%`;
+  const kpis = el("div", "kpis diagnostic");
+  const tile = (big, label) => {
+    const box = el("div", "kpi");
+    box.innerHTML = `<div class="big">${big}</div><div class="lbl">${label}</div>`;
+    return box;
+  };
+  kpis.appendChild(tile(pct(diagnostics.noPrizeRate), `5등도 못 맞출 확률 · ${diagnostics.lines}장 기준`));
+  kpis.appendChild(tile(diagnostics.expectedAnyPrize.toFixed(2) + "<small>장</small>", "5등 이상 기대 당첨 장수"));
+  kpis.appendChild(tile(
+    diagnostics.tripleCoverage.toLocaleString(),
+    `커버한 3개-조합 · 이론 최대 ${diagnostics.tripleCoverageMax.toLocaleString()}개의 ` +
+    `${Math.round(diagnostics.tripleCoverage / diagnostics.tripleCoverageMax * 100)}%`));
+  kpis.appendChild(tile(
+    `${diagnostics.concentration[0].number}<small>번 ${diagnostics.concentration[0].count}장</small>`,
+    "가장 많이 쓰인 번호"));
+  card.appendChild(kpis);
+
+  const ranks = diagnostics.expectedWins
+    .map((item) => `${item.label} ${item.expected < 0.01 ? `1/${Math.round(item.oneIn).toLocaleString()}` : `${item.expected.toFixed(2)}장`}`)
+    .join(" · ");
+  card.appendChild(el("p", "muted", `등수별 기대치: ${ranks}`));
+  card.appendChild(el("p", "muted",
+    `번호 편중 상위: ${diagnostics.concentration.map((item) => `${item.number}번 ${item.count}장`).join(", ")}`));
+
+  if (settings.fix.length) {
+    const warn = el("div", "callout warn compact");
+    warn.innerHTML = `고정 번호 ${settings.fix.join(", ")}는 <b>모든 조합에 함께</b> 들어갑니다. ` +
+      "표 한 장의 당첨 확률은 고정을 해도 1/42(5등 이상)로 같지만, 고정 번호가 안 나오는 회차에는 " +
+      `${diagnostics.lines}장이 <b>동시에</b> 불리해져 전멸 확률이 올라갑니다. 위 '못 맞출 확률'이 그 값입니다.`;
+    card.appendChild(warn);
+  }
+  card.appendChild(el("p", "muted",
+    `못 맞출 확률은 시드 고정 시뮬레이션 ${diagnostics.noPrizeTrials.toLocaleString()}회 추정값입니다(오차 ±0.3%p 안팎). ` +
+    "조합별 1등 확률은 어떤 설계에서도 1/8,145,060으로 동일합니다."));
+  return card;
+}
 function renderCombos(result, settings) {
-  const { combos, generatedPoolSize, coverage, maxOverlap } = result;
+  const { combos, generatedPoolSize, coverage, maxOverlap, diagnostics } = result;
   const { fix, poolSize, modelName, seed, activeRuleIds } = settings;
   const wrap = $("#genResults"); wrap.innerHTML = "";
   const card = el("div", "card");
@@ -576,7 +738,7 @@ function renderCombos(result, settings) {
   card.appendChild(el("div", "generation-meta",
     `<span class="meta-chip">시드 ${escapeHtml(seed)}</span>` +
     `<span class="meta-chip">사용 번호 ${coverage}개</span>` +
-    `<span class="meta-chip">최대 공통 ${maxOverlap}개</span>` +
+    `<span class="meta-chip${maxOverlap >= 3 ? " warn" : ""}">최대 공통 ${maxOverlap}개</span>` +
     `<span class="meta-chip${activeRuleIds.length ? " warn" : ""}">실험 필터 ${activeRuleIds.length}개</span>`
   ));
   combos.forEach(({ numbers, parts }, index) => {
@@ -591,6 +753,7 @@ function renderCombos(result, settings) {
   });
   card.appendChild(el("p", "muted", "점수는 후보 풀 안의 정렬 기준입니다. 조합별 1등 확률은 모두 1/8,145,060으로 동일합니다."));
   wrap.appendChild(card);
+  if (diagnostics) wrap.appendChild(renderDiagnostics(diagnostics, settings));
   currentGeneration = {
     schemaVersion: 1,
     targetRound: D.prediction.nextRound,
@@ -606,14 +769,21 @@ function renderCombos(result, settings) {
       generatedPoolSize,
       scenario: settings.scenarioName,
       noConsecutive: settings.noConsec,
-      diversify: settings.diversify,
-      maxOverlap: settings.diversify ? 4 : null,
+      diversify: Number.isFinite(settings.maxOverlap),
+      maxOverlap: Number.isFinite(settings.maxOverlap) ? settings.maxOverlap : null,
       fixed: [...fix],
       excluded: [...settings.exclude],
       experimentalRules: [...activeRuleIds],
     },
     weights: modelName === "legacy" ? D.prediction.legacyWeights : D.prediction.weights,
     lines: combos.map(({ numbers, parts }) => ({ numbers: [...numbers], score: Number(parts.total.toFixed(8)) })),
+    diagnostics: diagnostics ? {
+      noPrizeRate: Number(diagnostics.noPrizeRate.toFixed(4)),
+      tripleCoverage: diagnostics.tripleCoverage,
+      tripleCoverageMax: diagnostics.tripleCoverageMax,
+      expectedAnyPrize: Number(diagnostics.expectedAnyPrize.toFixed(3)),
+      concentration: diagnostics.concentration.map((item) => ({ ...item })),
+    } : null,
   };
   $("#lockCard").hidden = false;
   $("#lockStatus").textContent = "";
@@ -666,7 +836,7 @@ function generationText(record) {
   const conditions = [
     scenarioLabel(settings.scenario),
     settings.noConsecutive ? "연속번호 제외" : "연속번호 허용",
-    settings.diversify ? `조합 간 중복 최대 ${settings.maxOverlap ?? 4}개` : "조합 분산 제한 없음",
+    Number.isFinite(settings.maxOverlap) ? `조합 간 겹침 최대 ${settings.maxOverlap}개` : "조합 분산 제한 없음",
     settings.fixed?.length ? `고정 번호 ${settings.fixed.join(", ")}` : "고정 번호 없음",
     settings.excluded?.length ? `제외 번호 ${settings.excluded.join(", ")}` : "제외 번호 없음",
     filters.length ? `실험 필터 ${filters.join(", ")}` : "실험 필터 없음",
@@ -684,10 +854,16 @@ function generationText(record) {
     `재현 시드: ${record.seed}`,
     `생성 조합: ${lines.length}개`,
     `조건: ${conditions.join(" / ")}`,
+    ...(record.diagnostics ? [
+      `진단: 5등도 못 맞출 확률 ${(record.diagnostics.noPrizeRate * 100).toFixed(1)}% · ` +
+      `5등 이상 기대 ${record.diagnostics.expectedAnyPrize.toFixed(2)}장 · ` +
+      `커버 3개-조합 ${record.diagnostics.tripleCoverage}/${record.diagnostics.tripleCoverageMax}`,
+    ] : []),
     "",
     ...lines,
     "",
     "※ 모든 단일 조합의 1등 확률은 1/8,145,060으로 동일합니다.",
+    "※ 겹침 상한을 낮춰도 기대값은 같습니다. 낮아지는 것은 전부 꽝일 확률뿐입니다.",
   ].join("\n");
 }
 function downloadGenerationText(record) {
@@ -872,7 +1048,7 @@ function renderLedger() {
       scenarioLabel(record.settings.scenario),
       `시드 ${record.seed}`,
       `후보 ${Number(record.settings.generatedPoolSize).toLocaleString()}개`,
-      record.settings.diversify ? "중복 최대 4개" : "분산 제한 없음",
+      Number.isFinite(record.settings.maxOverlap) ? `겹침 최대 ${record.settings.maxOverlap}개` : "분산 제한 없음",
       filters.length ? `실험: ${filters.join("·")}` : "실험 필터 없음",
     ];
     const lines = record.lines.map((line, index) => {
@@ -949,7 +1125,7 @@ function bindActions() {
         scenarioName: $("#genScenario").value,
         modelName,
         noConsec: $("#genNoConsec").checked,
-        diversify: $("#genDiversify").checked,
+        maxOverlap: $("#genMaxOverlap").value === "none" ? null : parseInt($("#genMaxOverlap").value, 10),
         fix, exclude,
         seed: $("#genSeed").value.trim(),
         activeRuleIds: selectedExperimentRuleIds(),
