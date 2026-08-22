@@ -93,14 +93,21 @@
   <section class="tab" id="tab-generate" hidden>
     <div class="card hero">
       <h2 id="generatorTitle">다음 회차 후보 생성</h2>
-      <p class="muted">기본 패턴·전이·조건부 규칙·개별 번호·페어·출현주기를 함께 평가해 상위 조합을 표시합니다.</p>
+      <p class="muted">기본 패턴·전이·조건부 규칙·개별 번호·페어·출현주기를 함께 평가해 상위 조합을 표시합니다.
+        여러 장을 살 때는 <b>겹침 상한</b>이 중요합니다. 상한이 작을수록 조합끼리 덜 겹쳐
+        한 장도 못 맞출 확률이 내려갑니다(기대값은 그대로입니다).</p>
       <div class="controls">
         <label>생성 개수<input type="number" id="genCount" value="6" min="1" max="100" /></label>
         <label>후보 풀<select id="genPool"><option value="10000">10,000개</option><option value="30000" selected>30,000개</option><option value="60000">60,000개</option></select></label>
         <label>점수 모델<select id="genModel"><option value="integrated" selected>전체 규칙 통합 v2</option><option value="legacy">페어+주기 v1</option></select></label>
         <label>시나리오<select id="genScenario"><option value="all">전체</option></select></label>
         <label class="check"><input type="checkbox" id="genNoConsec" /> 연속번호 제외</label>
-        <label class="check"><input type="checkbox" id="genDiversify" checked /> 조합 간 중복 최대 4개</label>
+        <label>조합 간 겹침 상한<select id="genMaxOverlap">
+          <option value="2" selected>최대 2개 (권장)</option>
+          <option value="3">최대 3개</option>
+          <option value="4">최대 4개</option>
+          <option value="none">제한 없음</option>
+        </select></label>
       </div>
       <div class="controls">
         <label class="grow">고정 번호<input type="text" id="genFix" placeholder="예: 17, 33" inputmode="numeric" /></label>
