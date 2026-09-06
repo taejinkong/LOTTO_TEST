@@ -128,7 +128,7 @@ function donutSVG(slices, opts = {}) {
 
 /* ── 대시보드 상태/필터 ───────────────── */
 const state = {
-  range: 200,
+  range: 0,          // 0 = 전체 회차. 대시보드 기본 분석 표본은 1~1240회 전부다.
   oe: "all",
   include: null,
   tableSearch: "",
@@ -306,8 +306,8 @@ function bindFilters() {
     renderTable(filteredDraws());
   });
   $("#fReset").addEventListener("click", () => {
-    Object.assign(state, { range: 200, oe: "all", include: null, tableSearch: "" });
-    $("#fRange").value = "200"; $("#fOE").value = "all";
+    Object.assign(state, { range: 0, oe: "all", include: null, tableSearch: "" });
+    $("#fRange").value = "0"; $("#fOE").value = "all";
     $("#fInclude").value = ""; $("#tableSearch").value = "";
     renderDashboard();
   });
