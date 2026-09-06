@@ -657,11 +657,8 @@ function generateCombos({
   const scenario = D.prediction.scenarios.find((item) => item.name === scenarioName);
   /* 과거 1등 조합은 후보에서 뺀다. 확률이 올라가서가 아니라(1,240개는 814만
      조합의 0.015%라 사실상 0) 같은 조합을 다시 살 이유가 없어서다.
-     draws 에는 606회 이후만 있으므로 1~605회는 legacyWinning 에서 더한다. */
+     draws 가 1회부터 전부 담고 있어 별도 목록이 필요 없다. */
   const history = new Set(D.draws.map((row) => numsOf(row).join(",")));
-  for (const combo of (D.legacyWinning && D.legacyWinning.combos) || []) {
-    history.add([...combo].sort((a, b) => a - b).join(","));
-  }
 
   const buildPool = (size) => {
     const found = new Map();
