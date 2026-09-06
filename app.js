@@ -655,7 +655,13 @@ function generateCombos({
   const needed = 6 - fix.length;
   if (needed > available.length) throw new Error("제외수가 너무 많아 조합을 만들 수 없습니다.");
   const scenario = D.prediction.scenarios.find((item) => item.name === scenarioName);
+  /* 과거 1등 조합은 후보에서 뺀다. 확률이 올라가서가 아니라(1,240개는 814만
+     조합의 0.015%라 사실상 0) 같은 조합을 다시 살 이유가 없어서다.
+     draws 에는 606회 이후만 있으므로 1~605회는 legacyWinning 에서 더한다. */
   const history = new Set(D.draws.map((row) => numsOf(row).join(",")));
+  for (const combo of (D.legacyWinning && D.legacyWinning.combos) || []) {
+    history.add([...combo].sort((a, b) => a - b).join(","));
+  }
 
   const buildPool = (size) => {
     const found = new Map();
@@ -743,6 +749,7 @@ function generateCombos({
     ...best,
     ...portfolioStats(best.combos),
     diagnostics: portfolioDiagnostics(best.combos),
+    historySize: history.size,
   };
 }
 let currentGeneration = null;
@@ -797,7 +804,7 @@ function renderDiagnostics(diagnostics, settings) {
   return card;
 }
 function renderCombos(result, settings) {
-  const { combos, generatedPoolSize, coverage, maxOverlap, diagnostics, usageCap } = result;
+  const { combos, generatedPoolSize, coverage, maxOverlap, diagnostics, usageCap, historySize } = result;
   const { fix, poolSize, modelName, seed, activeRuleIds } = settings;
   const wrap = $("#genResults"); wrap.innerHTML = "";
   const card = el("div", "card");
@@ -808,6 +815,7 @@ function renderCombos(result, settings) {
     `<span class="meta-chip">사용 번호 ${coverage}개</span>` +
     `<span class="meta-chip${maxOverlap >= 3 ? " warn" : ""}">최대 공통 ${maxOverlap}개</span>` +
     (usageCap ? `<span class="meta-chip">번호 사용 상한 ${usageCap}장</span>` : "") +
+    `<span class="meta-chip">과거 1등 ${historySize.toLocaleString()}개 제외</span>` +
     `<span class="meta-chip${activeRuleIds.length ? " warn" : ""}">실험 필터 ${activeRuleIds.length}개</span>`
   ));
   combos.forEach(({ numbers, parts }, index) => {
