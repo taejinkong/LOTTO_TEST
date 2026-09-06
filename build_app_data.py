@@ -29,10 +29,9 @@ from lotto_prediction import (
 )
 
 
+# 1~1240회 전체가 들어 있다(2026-09-06에 1~605회를 합쳤다).
+# 파일명은 606회부터만 담던 시절의 것이라 실제 범위와 맞지 않는다.
 CSV_PATH = Path("lotto_winners_2020_2026.csv")
-# 1~605회는 통계·백테스트에는 쓰지 않고, '과거 1등 조합 제외'에만 쓴다.
-# 통계 기준선을 606회 이후로 유지하기 위해 draws 와 분리해 둔다.
-LEGACY_CSV_PATH = Path("lotto_winners_2002_2014.csv")
 OUT_PATH = Path("app/data.js")
 RECENT_WINDOW = 50
 RULE_CONFIG = {
@@ -256,9 +255,10 @@ def validation_summary() -> dict:
         "count": 30,
         "sampleSize": 20_000,
         "metric": "실제 당첨 조합의 표본 추정 백분위(낮을수록 우수)",
+        "trainingBase": "1~1240회 전체(2026-09-06부터). 이전에는 606회 이후만 학습했다.",
         "variants": [
-            {"label": "페어+주기 v1", "averagePercentile": 44.9, "medianPercentile": 45.3},
-            {"label": "전체 규칙 통합 v2", "averagePercentile": 46.4, "medianPercentile": 51.7},
+            {"label": "페어+주기 v1", "averagePercentile": 43.9, "medianPercentile": 43.1},
+            {"label": "전체 규칙 통합 v2", "averagePercentile": 45.4, "medianPercentile": 46.4},
             {
                 "label": "순수 무작위 기대 기준",
                 "averagePercentile": 50.0,
@@ -400,37 +400,10 @@ def insights(validation: dict) -> list[dict]:
     ]
 
 
-def load_legacy_combos(path: Path) -> list[list[int]]:
-    """과거 1등 조합만 뽑아 온다(제외용이라 번호 6개 외에는 필요 없다)."""
-    if not path.exists():
-        return []
-    combos = []
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        for row in csv.reader(fh):
-            if not row or not row[0] or row[0].startswith("회차"):
-                continue
-            try:
-                combos.append(sorted(int(row[i]) for i in range(2, 8)))
-            except ValueError:
-                continue
-    return combos
-
-
 def main() -> None:
     rows = load_rows(CSV_PATH)
     latest = rows[-1]
     validation = validation_summary()
-    legacy_combos = load_legacy_combos(LEGACY_CSV_PATH)
-    legacy_block = {
-        "firstRound": 1,
-        "lastRound": rows[0].round_no - 1,
-        "count": len(legacy_combos),
-        "combos": legacy_combos,
-        "note": (
-            "번호 생성 시 과거 1등 조합을 후보에서 빼기 위한 목록이다. "
-            "통계·차트·백테스트에는 쓰지 않는다."
-        ),
-    } if legacy_combos else None
     payload = {
         "meta": {
             "firstRound": rows[0].round_no,
@@ -453,7 +426,6 @@ def main() -> None:
         "stats": build_stats(rows),
         "prediction": build_prediction(rows),
         "ruleAnalysis": build_rule_analysis(rows),
-        "legacyWinning": legacy_block,
         "validation": validation,
         "insights": insights(validation),
     }

@@ -52,6 +52,8 @@ def load_data(path: Path, recent: int) -> tuple[np.ndarray, np.ndarray, list[tup
             nums = tuple(sorted(int(r[f"번호{k}"]) for k in range(1, 7)))
             rows.append((int(r["회차"].replace("회", "")), nums, int(r["1등 당첨자수(명)"])))
     rows.sort(key=lambda x: x[0])
+    # 1등 당첨자 0명 회차(초기 이월분)는 log 를 취할 수 없어 제외한다.
+    rows = [r for r in rows if r[2] > 0]
     if recent > 0:
         rows = rows[-recent:]
 

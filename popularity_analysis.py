@@ -138,6 +138,8 @@ def group_compare(feat_vals: list[float], target: list[float]) -> tuple[float, f
 
 
 def analyze(rows: list[Row]) -> list[str]:
+    # 1등 당첨자 0명 회차(초기 이월분)는 log 를 취할 수 없어 제외한다.
+    rows = [r for r in rows if r.winners > 0]
     # 판매량 보정: 풀 = winners × amount ∝ 판매량. 풀 평균으로 정규화.
     pools = [r.winners * r.amount for r in rows]
     pool_mean = mean(pools)

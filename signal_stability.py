@@ -45,7 +45,12 @@ def n_low12(nums) -> int:
 
 
 def regress(rows) -> dict:
-    """log(winners) ~ n_1_12 단순회귀. 계수, t, 그룹 평균."""
+    """log(winners) ~ n_1_12 단순회귀. 계수, t, 그룹 평균.
+
+    1등 당첨자가 0명인 회차(초기 이월분 14회)는 log 를 취할 수 없어 제외한다.
+    unpopular_strategy.py 도 같은 기준(winners > 0)을 쓴다.
+    """
+    rows = [r for r in rows if r[2] > 0]
     x = np.array([n_low12(nums) for _, nums, _ in rows], float)
     y = np.array([log(w) for _, _, w in rows], float)
     n = len(x)
