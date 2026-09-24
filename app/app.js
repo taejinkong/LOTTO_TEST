@@ -1047,6 +1047,35 @@ function renderBacktest() {
     `<table class="bt-table"><tbody>${weightRows}<tr><td>희귀 홀짝 연속</td><td>− ${D.prediction.rareAfterRarePenalty}</td></tr></tbody></table>` +
     `<p class="muted" style="margin-top:10px">활성 조건부 목표 ${D.prediction.activeConditionalTargets}개 · 최근 ${D.prediction.recentWindow}회 기준. 각 규칙군을 0~1로 정규화한 뒤 가중 합산합니다.</p>`;
   renderRuleRisk();
+  renderFullBacktest();
+}
+function renderFullBacktest() {
+  const full = D.fullBacktest;
+  $("#btFullCard").hidden = !full;
+  if (!full) return;
+  const pct = (v) => Number(v).toFixed(1);
+  const cell = (s) => `${pct(s.averagePercentile)}% <span class="muted" style="font-size:inherit">/ ${pct(s.medianPercentile)}%</span>`;
+  const range = (s) => `${pct(s.random95[0])}~${pct(s.random95[1])}%`;
+  const hits = (s) => `${s.top100kHits}회 <span class="muted" style="font-size:inherit">(무작위 ${s.top100kExpected})</span>`;
+  $("#btFullIntro").textContent =
+    `검증 회차 ${full.rounds}(${full.models[0].count.toLocaleString()}회) · 회차당 ${full.sampleSize.toLocaleString()}개 표본. ${full.excluded}.`;
+  $("#btFullTable").innerHTML =
+    `<table class="bt-table"><thead><tr><th>모델</th><th>평균 / 중앙</th><th>무작위 95%</th><th>Top 100,000</th></tr></thead><tbody>` +
+    full.models.map((m) => `<tr><td>${m.label}</td><td>${cell(m)}</td><td>${range(m)}</td><td>${hits(m)}</td></tr>`).join("") +
+    `</tbody></table>`;
+  $("#btFullSegments").innerHTML =
+    `<table class="bt-table"><thead><tr><th>구간</th><th>v1 평균</th><th>v2 평균</th><th>무작위 95%</th></tr></thead><tbody>` +
+    full.segments.map((g) =>
+      `<tr><td>${g.label}</td><td>${pct(g.np_no_num.averagePercentile)}%</td><td>${pct(g.integrated_v2.averagePercentile)}%</td><td>${range(g.np_no_num)}</td></tr>`
+    ).join("") + `</tbody></table>`;
+  const inside = full.models.every((m) => m.averagePercentile >= m.random95[0] && m.averagePercentile <= m.random95[1]);
+  $("#btFullNote").innerHTML =
+    (inside
+      ? `<b>두 모델 모두 무작위 범위 안입니다.</b> 전 회차 평균 백분위는 순수 무작위 기대치 50%와 구별되지 않습니다. `
+      : `<b>무작위 범위를 벗어난 모델이 있습니다.</b> 표본 추정치이므로 재실행으로 확인이 필요합니다. `) +
+    `v2 − v1 차이는 ${full.v2MinusV1 > 0 ? "+" : ""}${full.v2MinusV1}%p(t=${full.v2MinusV1T}), ` +
+    `v2가 더 나았던 회차는 ${full.v2BetterRounds.toLocaleString()}/${full.models[1].count.toLocaleString()}회입니다. ` +
+    `위 최근 30회 수치가 50%보다 낮아 보이는 것은 표본이 작아 생기는 흔들림입니다.`;
 }
 
 /* ── 인사이트 ─────────────────────────── */
