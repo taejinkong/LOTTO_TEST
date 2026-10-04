@@ -242,6 +242,8 @@ button { font-family: inherit; cursor: pointer; border: none; font-size: 15px; }
 .principles { margin: 6px 0 4px; padding-left: 20px; line-height: 1.65; }
 .principles li { margin: 4px 0; }
 .principles-box { margin-top: 12px; }
+.pool-title { margin-top: 14px; }
+.hint-outlook .pool-table tr.good td:first-child { color: var(--good); font-weight: 700; }
 .experiment-panel[open] { padding-bottom: 12px; }
 .experiment-panel[open] summary { border-bottom: 1px solid var(--line); margin-bottom: 12px; }
 .experiment-panel > p, .experiment-panel > div { margin-left: 14px; margin-right: 14px; }

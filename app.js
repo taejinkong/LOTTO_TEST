@@ -727,19 +727,35 @@ function generateCombos({
      draws 가 1회부터 전부 담고 있어 별도 목록이 필요 없다. */
   const history = new Set(D.draws.map((row) => numsOf(row).join(",")));
 
+  const consider = (found, numbers) => {
+    const key = numbers.join(",");
+    if (found.has(key) || history.has(key)) return;
+    if (noConsec && consecutiveCount(numbers) > 0) return;
+    if (!matchesScenario(numbers, scenario)) return;
+    if (!matchesExperimentalRules(numbers, activeRuleIds)) return;
+    found.set(key, { numbers, parts: scoreParts(numbers, modelName) });
+  };
   const buildPool = (size) => {
     const found = new Map();
+    /* 후보 풀처럼 가능한 조합 수가 요청 풀보다 적으면 표본 대신 전부 나열한다.
+       표본으로는 중복만 계속 뽑혀 수십만 번을 헛돈다. */
+    const space = choose(available.length, needed);
+    if (space <= size) {
+      const path = [];
+      const walk = (start) => {
+        if (path.length === needed) { consider(found, [...fix, ...path].sort((a, b) => a - b)); return; }
+        for (let i = start; i <= available.length - (needed - path.length); i++) {
+          path.push(available[i]); walk(i + 1); path.pop();
+        }
+      };
+      walk(0);
+      return { found, attempts: space };
+    }
     const maxAttempts = Math.max(size * 30, 20000);
     const rng = createSeededRandom(seed);
     let attempts = 0;
     for (; attempts < maxAttempts && found.size < size; attempts++) {
-      const numbers = [...fix, ...sample(available, needed, rng)].sort((a, b) => a - b);
-      const key = numbers.join(",");
-      if (found.has(key) || history.has(key)) continue;
-      if (noConsec && consecutiveCount(numbers) > 0) continue;
-      if (!matchesScenario(numbers, scenario)) continue;
-      if (!matchesExperimentalRules(numbers, activeRuleIds)) continue;
-      found.set(key, { numbers, parts: scoreParts(numbers, modelName) });
+      consider(found, [...fix, ...sample(available, needed, rng)].sort((a, b) => a - b));
     }
     return { found, attempts };
   };
@@ -754,7 +770,9 @@ function generateCombos({
     });
     const fixedSet = new Set(fix);
     const overlapLimit = limit + fix.length;
-    let cap = Math.ceil(count * 6 / 45) + 1;
+    /* 후보 풀처럼 고를 번호가 적으면 번호마다 더 자주 써야 한다. 기존(45개 기준)보다
+       낮아지지는 않게 해서 일반 모드의 결과는 그대로 둔다. */
+    let cap = Math.max(Math.ceil(count * 6 / 45), Math.ceil(count * needed / available.length)) + 1;
     const used = new Int32Array(46);
     const picked = [];
     const masks = [];
@@ -807,9 +825,11 @@ function generateCombos({
   }
   if (!best || !best.combos.length) throw new Error("조건을 만족하는 조합을 찾지 못했습니다.");
   if (best.combos.length < count) {
-    const cause = fix.length || exclude.length
-      ? `고정·제외를 빼면 ${available.length}개 번호에서 ${needed}개씩 고르게 되어 조합 여유가 적습니다. 고정·제외를 줄이거나, `
-      : "";
+    const cause = available.length <= 30
+      ? `고를 수 있는 번호가 ${available.length}개뿐이라 서로 덜 겹치는 조합을 많이 만들 수 없습니다(조합 수학의 한계). 후보 풀이라면 상한 3이나 '제한 없음'이 현실적입니다. `
+      : fix.length || exclude.length
+        ? `고정·제외를 빼면 ${available.length}개 번호에서 ${needed}개씩 고르게 되어 조합 여유가 적습니다. 고정·제외를 줄이거나, `
+        : "";
     throw new Error(`겹침 상한 ${limit}개(고정 번호 제외)를 지키며 ${count}개를 만들지 못했습니다(${best.combos.length}개까지 가능). ${cause}상한을 올리거나 장수를 줄여 주세요.`);
   }
   const diagnostics = portfolioDiagnostics(best.combos);
@@ -858,6 +878,52 @@ function hintPrinciples(fixCount, excludeCount) {
   }
   return result;
 }
+/* 후보 풀 커버: 당첨번호가 풀에 k개 들어왔을 때 생성 조합이 얼마나 맞는지 전수로 센다.
+   조합은 풀 안의 번호만 쓰므로 맞는 개수는 풀에 든 k개에만 달려 있다. */
+function poolCoverage(combos, pool) {
+  const masks = combos.map(({ numbers }) => maskPair(numbers));
+  const rows = [];
+  for (let k = 3; k <= 6; k++) {
+    if (k > pool.length) break;
+    let subsets = 0, guaranteed = 6, anyPrize = 0, prizeLines = 0, money = 0;
+    const chosen = [];
+    const walk = (start) => {
+      if (chosen.length === k) {
+        const [lo, hi] = maskPair(chosen);
+        let best = 0, lines = 0, won = 0;
+        for (const [mlo, mhi] of masks) {
+          const matches = popcount32(mlo & lo) + popcount32(mhi & hi);
+          if (matches > best) best = matches;
+          if (matches >= 3) { lines++; won += FIXED_PRIZE_WON[matches] || 0; }
+        }
+        subsets++;
+        if (best < guaranteed) guaranteed = best;
+        if (best >= 3) anyPrize++;
+        prizeLines += lines;
+        money += won;
+        return;
+      }
+      for (let i = start; i <= pool.length - (k - chosen.length); i++) {
+        chosen.push(pool[i]); walk(i + 1); chosen.pop();
+      }
+    };
+    walk(0);
+    rows.push({
+      k,
+      chance: choose(pool.length, k) * choose(45 - pool.length, 6 - k) / TOTAL_COMBINATIONS,
+      guaranteed,
+      anyPrize: anyPrize / subsets,
+      prizeLines: prizeLines / subsets,
+      money: money / subsets,
+    });
+  }
+  return rows;
+}
+const poolChanceAtLeast = (size, k) => {
+  let total = 0;
+  for (let x = k; x <= 6; x++) total += choose(size, x) * choose(45 - size, 6 - x);
+  return total / TOTAL_COMBINATIONS;
+};
 function filterEvidence(rules) {
   let passed = 0, total = 0;
   for (let i = 1; i < D.draws.length; i++) {
@@ -902,7 +968,12 @@ function settingAdvice(settings) {
         ? "2개 이상은 모두 맞을 확률이 급격히 떨어집니다. 가장 확신하는 1개만 남기는 것을 권합니다."
         : "확신이 있는 번호는 제외보다 포함으로 넣을 때 효과가 큽니다."));
   }
-  if (principles.exclude) {
+  if (settings.candidatePool?.length) {
+    const size = settings.candidatePool.length;
+    items.push(`<b>후보 풀 ${size}개</b>: 풀 밖 ${45 - size}개를 모두 제외하는 것과 같습니다. 아무렇게나 골라도 당첨번호가 ` +
+      `3개 이상 풀에 들 확률 ${fmtPct(poolChanceAtLeast(size, 3))}, 4개 이상 ${fmtPct(poolChanceAtLeast(size, 4))}, 6개 모두 ${fmtPct(poolChanceAtLeast(size, 6))}입니다. ` +
+      "풀이 작을수록 들어왔을 때 크게 맞지만 빗나갈 확률도 커지고, 평균은 그대로입니다.");
+  } else if (principles.exclude) {
     const { chance, right, oneWrong } = principles.exclude;
     items.push(`<b>제외 ${settings.exclude.length}개</b>: 아무렇게나 골라도 모두 맞을 확률이 ${fmtPct(chance)}입니다. ` +
       `${settings.fix.length ? "포함이 맞았다는 전제에서 " : ""}모두 맞으면 ${fmtRatio(right)}, 하나만 틀려도 ${fmtRatio(oneWrong)}. ` +
@@ -916,7 +987,10 @@ function settingAdvice(settings) {
         ? `당첨조합이 더 자주 통과했지만(z=${evidence.z.toFixed(2)}) 여러 필터를 고른 뒤의 결과라 우연일 수 있습니다.`
         : `당첨조합을 더 잘 골라내지 못하므로(z=${evidence.z.toFixed(2)}) 무작위로 번호를 몇 개 빼는 것과 같습니다. 켜도 기대값은 그대로이고, 걸리는 회차에는 1등 조합이 아예 빠집니다.`));
   }
-  if (settings.maxOverlap !== 2) {
+  if (settings.candidatePool?.length) {
+    items.push("<b>겹침 상한</b>: 후보 풀은 번호가 적어 상한 2로는 장수를 많이 채울 수 없습니다(15개 풀이면 약 8장). " +
+      "위 커버 표의 '최소 보장'과 '5등 이상 확률'을 보고 상한과 장수를 고르세요.");
+  } else if (settings.maxOverlap !== 2) {
     items.push("<b>겹침 상한</b>: 2(고정 제외)로 두면 기대값은 그대로이고 한 장도 못 맞출 확률만 내려갑니다.");
   }
   return [...items, ...personalHintAdvice()];
@@ -940,11 +1014,26 @@ function renderHintGuide() {
         `당첨조합이 더 자주 통과했지만(z=${filters.z.toFixed(2)}), 여러 필터를 고른 뒤의 결과라 우연일 수 있습니다.`
       : `<b>실험 필터는 무작위 제외와 같습니다.</b> 6개를 모두 켜면 과거 당첨조합 통과율 ${fmtPct(filters.history)}, 무작위 조합 ${fmtPct(filters.random)}로 ` +
         `당첨조합을 더 잘 골라내지 못합니다(z=${filters.z.toFixed(2)}). 켜도 기대값은 그대로입니다.`,
+    `<b>후보 풀은 강한 제외입니다.</b> 15개 풀이면 아무렇게나 골라도 당첨번호가 3개 이상 들 확률 ${fmtPct(poolChanceAtLeast(15, 3))}, ` +
+      `6개 모두 들 확률 ${fmtPct(poolChanceAtLeast(15, 6))}입니다. 들어오면 크게 맞지만 평균은 그대로라, 힌트 적중률로 근거가 쌓인 뒤에 쓰는 것을 권합니다.`,
     `<b>여러 장은 한 번에, 겹침 상한 2로.</b> 고정 번호는 겹침에서 빼고 셉니다. 기대값은 같고 한 장도 못 맞출 확률만 내려갑니다.`,
   ];
   body.innerHTML = `<ol class="principles">${rules.map((rule) => `<li>${rule}</li>`).join("")}</ol>` +
     `<p class="muted"><small>배수는 조건에 맞게 무작위로 고른 장의 고정 당첨금(4등 5만 원·5등 5천 원) 기대값을 힌트가 없을 때와 비교한 값입니다. 필터 통과율은 현재 데이터로 매번 다시 계산합니다.</small></p>`;
   body.dataset.ready = "1";
+}
+function renderPoolCoverage(pool, combos) {
+  if (!combos?.length) return "";
+  const rows = poolCoverage(combos, pool);
+  const won = (value) => `${(Math.round(value / 100) * 100).toLocaleString()}원`;
+  const guarantee = (row) => (row.guaranteed >= 4 ? "4등 이상" : row.guaranteed === 3 ? "5등 1장 이상" : "보장 없음");
+  return `<h4 class="pool-title">후보 풀 커버 (당첨번호가 풀에 k개 들어왔을 때)</h4>` +
+    `<div class="table-x"><table class="bt-table pool-table"><thead><tr><th>풀 안 당첨번호</th><th>무작위 확률</th><th>최소 보장</th><th>5등 이상 확률</th><th>당첨 장수</th><th>고정 당첨금</th></tr></thead><tbody>` +
+    rows.map((row) => `<tr class="${row.guaranteed >= 3 ? "good" : ""}"><td>${row.k}개</td><td data-label="무작위 확률">${fmtPct(row.chance)}</td>` +
+      `<td data-label="최소 보장">${guarantee(row)}</td><td data-label="5등 이상 확률">${fmtPct(row.anyPrize)}</td>` +
+      `<td data-label="당첨 장수">${row.prizeLines.toFixed(2)}장</td><td data-label="고정 당첨금">${won(row.money)}</td></tr>`).join("") +
+    `</tbody></table></div>` +
+    `<p class="muted"><small>풀 안의 k개 조합을 전부 세어 계산했습니다. 당첨번호가 풀에 2개 이하로 들어오면 어떤 조합도 3개를 맞출 수 없습니다. 풀이 작고 장수가 많을수록 '최소 보장'이 올라갑니다.</small></p>`;
 }
 function renderHintOutlook(outlook, lines, settings) {
   const box = el("div", "hint-outlook");
@@ -952,7 +1041,10 @@ function renderHintOutlook(outlook, lines, settings) {
   const won = (value) => `${(Math.round(value / 100) * 100).toLocaleString()}원`;
   const parts = [];
   if (settings.fix.length) parts.push(`포함 ${settings.fix.join(", ")}`);
-  if (settings.exclude.length) parts.push(`제외 ${settings.exclude.join(", ")}`);
+  if (settings.candidatePool?.length) {
+    parts.push(`후보 풀 ${settings.candidatePool.length}개(${settings.candidatePool.join(", ")})`);
+    if (settings.userExclude?.length) parts.push(`제외 ${settings.userExclude.join(", ")}`);
+  } else if (settings.exclude.length) parts.push(`제외 ${settings.exclude.join(", ")}`);
   if (settings.activeRuleIds?.length) parts.push(`실험 필터 ${settings.activeRuleIds.length}개`);
   const row = (data) =>
     `<tr class="${data.cls}"><td>${data.label}</td><td data-label="무작위 확률">${data.key === "overall" ? "–" : pct(data.p)}</td>` +
@@ -971,6 +1063,7 @@ function renderHintOutlook(outlook, lines, settings) {
     `<p class="muted">무작위로 골랐다면 이 조건이 모두 맞을 확률은 <b>${pct(outlook.p)}</b>입니다. ` +
     `모두 맞으면 고정 당첨금이 평균의 <b>${ratio(right.money, average.money).toFixed(2)}배</b>, ${worst.label.replace(/면$/, "")}면 <b>${ratio(worst.money, average.money).toFixed(2)}배</b>가 되고, ` +
     `확률로 가중하면 힌트가 없을 때와 같습니다. 평균보다 나아지려면 힌트가 무작위보다 자주 맞아야 하며, 그건 <b>예측 원장 → 힌트 적중률</b>에서 확인할 수 있습니다.</p>` +
+    (settings.candidatePool?.length ? renderPoolCoverage(settings.candidatePool, settings.combosForCoverage) : "") +
     `<div class="callout compact principles-box"><b>이 설정에 대한 조언</b><ul class="principles">${settingAdvice(settings).map((item) => `<li>${item}</li>`).join("")}</ul></div>` +
     `<p class="muted"><small>'모두 맞으면'은 조건에 맞는 당첨조합 ${outlook.samples.toLocaleString()}개 표본 추정, 나머지는 정확값에서 역산했습니다.</small></p>`;
   return box;
@@ -1053,7 +1146,7 @@ function renderCombos(result, settings) {
   });
   card.appendChild(el("p", "muted", "점수는 후보 풀 안의 정렬 기준입니다. 조합별 1등 확률은 모두 1/8,145,060으로 동일합니다."));
   wrap.appendChild(card);
-  if (diagnostics) wrap.appendChild(renderDiagnostics(diagnostics, settings));
+  if (diagnostics) wrap.appendChild(renderDiagnostics(diagnostics, { ...settings, combosForCoverage: combos }));
   currentGeneration = {
     schemaVersion: 1,
     targetRound: D.prediction.nextRound,
@@ -1075,6 +1168,7 @@ function renderCombos(result, settings) {
       usageCap: usageCap ?? null,
       fixed: [...fix],
       excluded: [...settings.exclude],
+      candidatePool: settings.candidatePool?.length ? [...settings.candidatePool] : null,
       experimentalRules: [...activeRuleIds],
     },
     weights: modelName === "legacy" ? D.prediction.legacyWeights : D.prediction.weights,
@@ -1153,7 +1247,9 @@ function generationText(record) {
       : "조합 분산 제한 없음",
     settings.usageCap ? `번호 하나가 들어간 최대 장수 ${settings.usageCap}장` : "번호 사용 상한 없음",
     settings.fixed?.length ? `고정 번호 ${settings.fixed.join(", ")}` : "고정 번호 없음",
-    settings.excluded?.length ? `제외 번호 ${settings.excluded.join(", ")}` : "제외 번호 없음",
+    settings.candidatePool?.length
+      ? `후보 풀 ${settings.candidatePool.length}개 ${settings.candidatePool.join(", ")}`
+      : settings.excluded?.length ? `제외 번호 ${settings.excluded.join(", ")}` : "제외 번호 없음",
     filters.length ? `실험 필터 ${filters.join(", ")}` : "실험 필터 없음",
   ];
   const generatedAt = new Date(record.generatedAt || record.savedAt || Date.now()).toLocaleString("ko-KR");
@@ -1400,6 +1496,7 @@ function hintOf(record) {
     fixed: [...(settings.fixed || [])].sort((a, b) => a - b),
     excluded: [...(settings.excluded || [])].sort((a, b) => a - b),
     rules: [...(settings.experimentalRules || [])].sort(),
+    pool: [...(settings.candidatePool || [])].sort((a, b) => a - b),
   };
 }
 const hintKey = (hint) => [hint.targetRound, hint.fixed.join(","), hint.excluded.join(","), hint.rules.join(",")].join("|");
@@ -1450,7 +1547,8 @@ function hintScorecard() {
     const draw = drawByRound.get(hint.targetRound);
     if (!draw) { pending++; continue; }
     if (!hint.generatedAt || new Date(hint.generatedAt) >= new Date(`${draw[1]}T20:00:00+09:00`)) { late++; continue; }
-    const merged = byRound.get(hint.targetRound) || { targetRound: hint.targetRound, fixed: new Set(), excluded: new Set(), ruleSets: new Map() };
+    const merged = byRound.get(hint.targetRound) || { targetRound: hint.targetRound, fixed: new Set(), excluded: new Set(), ruleSets: new Map(), pools: new Map() };
+    if (hint.pool?.length) merged.pools.set(hint.pool.join(","), hint.pool);
     hint.fixed.forEach((n) => merged.fixed.add(n));
     hint.excluded.forEach((n) => merged.excluded.add(n));
     if (hint.rules.length) merged.ruleSets.set(hint.rules.join(","), hint.rules);
@@ -1465,6 +1563,7 @@ function hintScorecard() {
       fixed: [...merged.fixed].sort((a, b) => a - b),
       excluded: [...merged.excluded].sort((a, b) => a - b),
       rules: ruleSets.length ? ruleSets.reduce((widest, rules) => (rules.length > widest.length ? rules : widest)) : [],
+      pools: [...merged.pools.values()],
     };
     const winning = new Set(numsOf(draw));
     const row = { hint, draw };
@@ -1537,7 +1636,16 @@ function renderHintScore() {
     const mark = (numbers, good) => numbers.map((n) => `<span class="hint-num ${good(n) ? "ok" : "ng"}">${n}</span>`).join("");
     const parts = [];
     if (fixed) parts.push(`포함 ${mark(hint.fixed, (n) => winning.has(n))} <small>${fixed.hits}/${fixed.n}</small>`);
-    if (excluded) parts.push(`제외 ${mark(hint.excluded, (n) => !winning.has(n))} <small>${excluded.correct}/${excluded.n}</small>`);
+    for (const pool of hint.pools || []) {
+      const inside = pool.filter((n) => winning.has(n));
+      parts.push(`후보 풀 ${pool.length}개 중 당첨 ${mark(inside, () => true) || "0개"} <small>${inside.length}개 · 무작위 기대 ${(pool.length * 6 / 45).toFixed(1)}개</small>`);
+    }
+    if (excluded) {
+      /* 후보 풀이면 제외가 수십 개라 전부 나열하지 않고 틀린 것만 보인다. */
+      parts.push(excluded.n > 12
+        ? `제외 ${excluded.n}개 <small>${excluded.correct}/${excluded.n}</small>${excluded.misses ? ` 빗나감 ${mark(hint.excluded.filter((n) => winning.has(n)), () => false)}` : ""}`
+        : `제외 ${mark(hint.excluded, (n) => !winning.has(n))} <small>${excluded.correct}/${excluded.n}</small>`);
+    }
     if (filter) {
       parts.push(filter.passed
         ? `필터 ${hint.rules.length}개 <span class="hint-num ok">통과</span>`
@@ -1577,6 +1685,7 @@ function renderLedger() {
       Number.isFinite(record.settings.maxOverlap)
         ? `겹침 최대 ${record.settings.maxOverlap}개${record.settings.overlapExcludesFixed && record.settings.fixed?.length ? "(고정 제외)" : ""}`
         : "분산 제한 없음",
+      ...(record.settings.candidatePool?.length ? [`후보 풀 ${record.settings.candidatePool.length}개`] : []),
       filters.length ? `실험: ${filters.join("·")}` : "실험 필터 없음",
     ];
     const lines = record.lines.map((line, index) => {
@@ -1646,7 +1755,18 @@ function bindActions() {
     errBox.hidden = true;
     try {
       const fix = parseNumberList($("#genFix").value);
-      const exclude = parseNumberList($("#genExclude").value);
+      const userExclude = parseNumberList($("#genExclude").value);
+      /* 후보 풀은 '풀 밖 번호를 모두 제외'로 바꿔 넘긴다. 진단·조언·적중률 채점이 그대로 이어진다. */
+      const pickedPool = parseNumberList($("#genCandidatePool").value);
+      let candidatePool = null;
+      let exclude = userExclude;
+      if (pickedPool.length) {
+        const poolSet = new Set([...pickedPool, ...fix]);
+        if (userExclude.some((n) => poolSet.has(n))) throw new Error("후보 풀(또는 고정 번호)과 제외 번호가 겹칩니다.");
+        if (poolSet.size < 8 || poolSet.size > 30) throw new Error(`후보 풀은 고정 번호를 포함해 8~30개여야 합니다(지금 ${poolSet.size}개).`);
+        candidatePool = [...poolSet].sort((a, b) => a - b);
+        exclude = Array.from({ length: 45 }, (_, i) => i + 1).filter((n) => !poolSet.has(n));
+      }
       const poolSize = parseInt($("#genPool").value, 10);
       const modelName = $("#genModel").value;
       const settings = {
@@ -1656,7 +1776,7 @@ function bindActions() {
         modelName,
         noConsec: $("#genNoConsec").checked,
         maxOverlap: $("#genMaxOverlap").value === "none" ? null : parseInt($("#genMaxOverlap").value, 10),
-        fix, exclude,
+        fix, exclude, userExclude, candidatePool,
         seed: $("#genSeed").value.trim(),
         activeRuleIds: selectedExperimentRuleIds(),
       };
