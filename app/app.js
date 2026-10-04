@@ -640,6 +640,76 @@ function portfolioDiagnostics(combos) {
     concentration: numberConcentration(combos),
   };
 }
+/* 힌트(고정·제외·실험 필터)가 맞을 때와 틀릴 때의 기대치.
+   무조건 기대치(장수 × 고정 확률)는 정확히 알고 있다. '모두 맞음'은 힌트와 일치하는
+   당첨조합을 시드 고정으로 표본 추출해 실제 생성 조합과 대조하고, 나머지 경우는
+   무조건 = Σ 확률·기대치 관계에서 역산한다. 그래서 각 줄을 무작위 확률로 가중평균하면
+   언제나 힌트 없는 기대치와 같다.
+   고정 번호가 있으면 '틀림'을 둘로 나눈다. 포함은 맞고 제외 하나만 틀린 경우(1244회
+   38번)와 포함이 틀린 경우는 결과가 몇 배씩 달라, 한 줄로 묶으면 오해를 부른다. */
+const FIXED_PRIZE_WON = { 3: 5000, 4: 50000 };
+function choose(n, k) {
+  if (k < 0 || k > n) return 0;
+  let result = 1;
+  for (let i = 1; i <= k; i++) result = result * (n - k + i) / i;
+  return result;
+}
+function sampleOutlook(masks, fix, available, rules, rng) {
+  const target = 20000, maxAttempts = 200000;
+  let accepted = 0, attempts = 0, fifth = 0, fourth = 0, higher = 0, noPrize = 0;
+  for (; attempts < maxAttempts && accepted < target; attempts++) {
+    const draw = [...fix, ...sample(available, 6 - fix.length, rng)].sort((a, b) => a - b);
+    if (rules.length && !matchesExperimentalRules(draw, rules)) continue;
+    accepted++;
+    const [lo, hi] = maskPair(draw);
+    let any = false;
+    for (const [mlo, mhi] of masks) {
+      const matches = popcount32(mlo & lo) + popcount32(mhi & hi);
+      if (matches === 3) fifth++;
+      else if (matches === 4) fourth++;
+      else if (matches >= 5) higher++;
+      if (matches >= 3) any = true;
+    }
+    if (!any) noPrize++;
+  }
+  if (!accepted) return null;
+  return {
+    passRate: accepted / attempts,
+    samples: accepted,
+    row: { fifth: fifth / accepted, fourth: fourth / accepted, any: (fifth + fourth + higher) / accepted, noPrize: noPrize / accepted },
+  };
+}
+const OUTLOOK_KEYS = ["fifth", "fourth", "any", "noPrize"];
+/* 전체 확률 pAll·기대 all 에서 부분집합(pPart·part)을 뺀 나머지 기대치 */
+const residualRow = (all, pAll, part, pPart) => Object.fromEntries(OUTLOOK_KEYS.map((key) =>
+  [key, pAll - pPart > 1e-12 ? Math.max(0, (pAll * all[key] - pPart * part[key]) / (pAll - pPart)) : 0]));
+function hintOutlook(combos, { fix, exclude, activeRuleIds }, diagnostics) {
+  const rules = activeRuleIds || [];
+  if (!fix.length && !exclude.length && !rules.length) return null;
+  const all = Array.from({ length: 45 }, (_, i) => i + 1);
+  const blocked = new Set([...fix, ...exclude]);
+  const available = all.filter((number) => !blocked.has(number));
+  const masks = combos.map(({ numbers }) => maskPair(numbers));
+  const rng = createSeededRandom(`hint-outlook|${fix.join(",")}|${exclude.join(",")}|${rules.join(",")}`);
+  const allRight = sampleOutlook(masks, fix, available, rules, rng);
+  if (!allRight) return null;
+  const wins = Object.fromEntries(diagnostics.expectedWins.map((item) => [item.label, item.expected]));
+  const overall = { fifth: wins["5등"], fourth: wins["4등"], any: diagnostics.expectedAnyPrize, noPrize: diagnostics.noPrizeRate };
+  const p = choose(available.length, 6 - fix.length) / TOTAL_COMBINATIONS * allRight.passRate;
+  const rows = [{ key: "right", label: "모두 맞으면", cls: "good", p, ...allRight.row }];
+  const hasOthers = exclude.length || rules.length;
+  if (fix.length && hasOthers) {
+    const fixRight = sampleOutlook(masks, fix, all.filter((number) => !fix.includes(number)), [], rng);
+    const pFix = choose(45 - fix.length, 6 - fix.length) / TOTAL_COMBINATIONS;
+    rows.push({ key: "fixOnly", label: "포함은 맞고 제외·필터 일부 틀림", cls: "mid", p: pFix - p, ...residualRow(fixRight.row, pFix, allRight.row, p) });
+    rows.push({ key: "fixWrong", label: "포함 번호가 틀리면", cls: "bad", p: 1 - pFix, ...residualRow(overall, 1, fixRight.row, pFix) });
+  } else {
+    rows.push({ key: "wrong", label: "하나라도 틀리면", cls: "bad", p: 1 - p, ...residualRow(overall, 1, allRight.row, p) });
+  }
+  rows.push({ key: "overall", label: "평균 (힌트 없음과 같음)", cls: "", p: 1, ...overall });
+  for (const row of rows) row.money = row.fifth * FIXED_PRIZE_WON[3] + row.fourth * FIXED_PRIZE_WON[4];
+  return { p, rows, samples: allRight.samples };
+}
 function generateCombos({
   count, poolSize, scenarioName, modelName, noConsec, maxOverlap, fix, exclude, seed, activeRuleIds,
 }) {
@@ -742,14 +812,44 @@ function generateCombos({
       : "";
     throw new Error(`겹침 상한 ${limit}개를 지키며 ${count}개를 만들지 못했습니다(${best.combos.length}개까지 가능). ${cause}상한을 올리거나 장수를 줄여 주세요.`);
   }
+  const diagnostics = portfolioDiagnostics(best.combos);
+  diagnostics.hintOutlook = hintOutlook(best.combos, { fix, exclude, activeRuleIds }, diagnostics);
   return {
     ...best,
     ...portfolioStats(best.combos),
-    diagnostics: portfolioDiagnostics(best.combos),
+    diagnostics,
     historySize: history.size,
   };
 }
 let currentGeneration = null;
+function renderHintOutlook(outlook, lines, settings) {
+  const box = el("div", "hint-outlook");
+  const pct = (value) => `${(value * 100).toFixed(value < 0.01 ? 2 : 1)}%`;
+  const won = (value) => `${(Math.round(value / 100) * 100).toLocaleString()}원`;
+  const parts = [];
+  if (settings.fix.length) parts.push(`포함 ${settings.fix.join(", ")}`);
+  if (settings.exclude.length) parts.push(`제외 ${settings.exclude.join(", ")}`);
+  if (settings.activeRuleIds?.length) parts.push(`실험 필터 ${settings.activeRuleIds.length}개`);
+  const row = (data) =>
+    `<tr class="${data.cls}"><td>${data.label}</td><td data-label="무작위 확률">${data.key === "overall" ? "–" : pct(data.p)}</td>` +
+    `<td data-label="5등">${data.fifth.toFixed(2)}장</td><td data-label="4등">${data.fourth.toFixed(2)}장</td>` +
+    `<td data-label="고정 당첨금">${won(data.money)}</td><td data-label="전멸 확률">${pct(data.noPrize)}</td></tr>`;
+  const ratio = (a, b) => (b > 0 ? a / b : 0);
+  const right = outlook.rows[0];
+  const average = outlook.rows[outlook.rows.length - 1];
+  const worst = outlook.rows[outlook.rows.length - 2];
+  box.innerHTML =
+    `<h4>힌트가 맞을 때와 틀릴 때</h4>` +
+    `<p class="muted">걸어 둔 조건: <b>${escapeHtml(parts.join(" · "))}</b>. ${lines}장 기준이며, 고정 당첨금은 4등 5만 원·5등 5천 원만 셉니다(구매액 ${(lines * 1000).toLocaleString()}원).</p>` +
+    `<div class="table-x"><table class="bt-table"><thead><tr><th>경우</th><th>무작위 확률</th><th>5등</th><th>4등</th><th>고정 당첨금</th><th>한 장도 못 맞출 확률</th></tr></thead><tbody>` +
+    outlook.rows.map(row).join("") +
+    `</tbody></table></div>` +
+    `<p class="muted">무작위로 골랐다면 이 조건이 모두 맞을 확률은 <b>${pct(outlook.p)}</b>입니다. ` +
+    `모두 맞으면 고정 당첨금이 평균의 <b>${ratio(right.money, average.money).toFixed(2)}배</b>, ${worst.label.replace(/면$/, "")}면 <b>${ratio(worst.money, average.money).toFixed(2)}배</b>가 되고, ` +
+    `확률로 가중하면 힌트가 없을 때와 같습니다. 평균보다 나아지려면 힌트가 무작위보다 자주 맞아야 하며, 그건 <b>예측 원장 → 힌트 적중률</b>에서 확인할 수 있습니다.</p>` +
+    `<p class="muted"><small>'모두 맞으면'은 조건에 맞는 당첨조합 ${outlook.samples.toLocaleString()}개 표본 추정, 나머지는 정확값에서 역산했습니다.</small></p>`;
+  return box;
+}
 function renderDiagnostics(diagnostics, settings) {
   const card = el("div", "card");
   card.appendChild(el("h3", null, "구매 전 포트폴리오 진단"));
@@ -774,6 +874,7 @@ function renderDiagnostics(diagnostics, settings) {
     `${diagnostics.concentration[0].number}<small>번 ${diagnostics.concentration[0].count}장</small>`,
     "가장 많이 쓰인 번호"));
   card.appendChild(kpis);
+  if (diagnostics.hintOutlook) card.appendChild(renderHintOutlook(diagnostics.hintOutlook, diagnostics.lines, settings));
 
   const ranks = diagnostics.expectedWins
     .map((item) => `${item.label} ${item.expected < 0.01 ? `1/${Math.round(item.oneIn).toLocaleString()}` : `${item.expected.toFixed(2)}장`}`)
@@ -859,6 +960,13 @@ function renderCombos(result, settings) {
       tripleCoverageMax: diagnostics.tripleCoverageMax,
       expectedAnyPrize: Number(diagnostics.expectedAnyPrize.toFixed(3)),
       concentration: diagnostics.concentration.map((item) => ({ ...item })),
+      hintOutlook: diagnostics.hintOutlook ? diagnostics.hintOutlook.rows.map((row) => ({
+        case: row.key,
+        chance: Number(row.p.toFixed(6)),
+        fifth: Number(row.fifth.toFixed(4)),
+        fourth: Number(row.fourth.toFixed(4)),
+        noPrize: Number(row.noPrize.toFixed(4)),
+      })) : null,
     } : null,
   };
   $("#lockCard").hidden = false;
