@@ -711,7 +711,7 @@ function hintOutlook(combos, { fix, exclude, activeRuleIds }, diagnostics) {
   return { p, rows, samples: allRight.samples };
 }
 function generateCombos({
-  count, poolSize, scenarioName, modelName, noConsec, maxOverlap, fix, exclude, seed, activeRuleIds,
+  count, poolSize, scenarioName, modelName, noConsec, maxOverlap, fix, exclude, seed, activeRuleIds, order = "score",
 }) {
   const fixed = new Set(fix), excluded = new Set(exclude);
   const limit = Number.isFinite(maxOverlap) ? maxOverlap : null;
@@ -814,7 +814,13 @@ function generateCombos({
   for (const size of sizes) {
     const { found, attempts } = buildPool(size);
     if (!found.size) continue;
-    const ranked = [...found.values()].sort((a, b) => b.parts.total - a.parts.total);
+    /* 무작위 선택: 점수순 대신 시드 고정으로 섞어 앞에서부터 고른다. 1244회 전수 순위에서
+       당첨조합은 점수 상위 16~18%였고, 30회 백테스트도 무작위 범위였다. 점수 상위만 고를
+       근거가 없으므로 조건(고정·제외·필터·겹침)만 지키고 순서는 무작위로 둘 수 있다. */
+    const candidates = [...found.values()];
+    const ranked = order === "random"
+      ? sample(candidates, candidates.length, createSeededRandom(`${seed}|order|${size}`))
+      : candidates.sort((a, b) => b.parts.total - a.parts.total);
     const { picked: combos, usageCap } = select(ranked);
     const result = { combos, generatedPoolSize: found.size, attempts, poolSizeUsed: size, usageCap };
     if (!best || combos.length > best.combos.length) best = result;
@@ -1125,7 +1131,8 @@ function renderCombos(result, settings) {
   const wrap = $("#genResults"); wrap.innerHTML = "";
   const card = el("div", "card");
   const modelLabel = modelName === "legacy" ? "페어+주기 v1" : "전체 규칙 통합 v2";
-  card.appendChild(el("h3", null, `${generatedPoolSize.toLocaleString()}개 후보 중 ${combos.length}개 · ${modelLabel}`));
+  const randomOrder = settings.order === "random";
+  card.appendChild(el("h3", null, `${generatedPoolSize.toLocaleString()}개 후보 중 ${combos.length}개 · ${randomOrder ? "무작위 선택" : `점수 상위 · ${modelLabel}`}`));
   card.appendChild(el("div", "generation-meta",
     `<span class="meta-chip">시드 ${escapeHtml(seed)}</span>` +
     `<span class="meta-chip">사용 번호 ${coverage}개</span>` +
@@ -1141,7 +1148,7 @@ function renderCombos(result, settings) {
       : `패턴 ${parts.pattern.toFixed(3)} · 전이 ${parts.transition.toFixed(3)} · 조건부 ${parts.conditional.toFixed(3)}<br>` +
         `번호 ${parts.number.toFixed(3)} · 페어 ${parts.pair.toFixed(3)} · 주기 ${parts.cycle.toFixed(3)}`;
     row.innerHTML = ballsHtml(numbers, fix, "lg") +
-      `<div class="tag"><b>${index + 1}위 · ${parts.total.toFixed(6)}</b><br>${detail}${parts.penalty ? `<br>홀짝 감점 -${parts.penalty.toFixed(2)}` : ""}</div>`;
+      `<div class="tag"><b>${randomOrder ? `${index + 1}번 · 점수 ${parts.total.toFixed(6)}` : `${index + 1}위 · ${parts.total.toFixed(6)}`}</b><br>${detail}${parts.penalty ? `<br>홀짝 감점 -${parts.penalty.toFixed(2)}` : ""}</div>`;
     card.appendChild(row);
   });
   card.appendChild(el("p", "muted", "점수는 후보 풀 안의 정렬 기준입니다. 조합별 1등 확률은 모두 1/8,145,060으로 동일합니다."));
@@ -1161,6 +1168,7 @@ function renderCombos(result, settings) {
       requestedPoolSize: poolSize,
       generatedPoolSize,
       scenario: settings.scenarioName,
+      order: settings.order === "random" ? "random" : "score",
       noConsecutive: settings.noConsec,
       diversify: Number.isFinite(settings.maxOverlap),
       maxOverlap: Number.isFinite(settings.maxOverlap) ? settings.maxOverlap : null,
@@ -1241,6 +1249,7 @@ function generationText(record) {
   const filters = (settings.experimentalRules || []).map(ruleLabel);
   const conditions = [
     scenarioLabel(settings.scenario),
+    settings.order === "random" ? "무작위 선택" : "점수 상위 선택",
     settings.noConsecutive ? "연속번호 제외" : "연속번호 허용",
     Number.isFinite(settings.maxOverlap)
       ? `조합 간 겹침 최대 ${settings.maxOverlap}개${settings.overlapExcludesFixed && settings.fixed?.length ? "(고정 번호 제외)" : ""}`
@@ -1678,7 +1687,7 @@ function renderLedger() {
     const outcome = ledgerOutcome(record);
     const filters = (record.settings.experimentalRules || []).map(ruleLabel);
     const settings = [
-      record.modelName,
+      record.settings.order === "random" ? "무작위 선택" : record.modelName,
       scenarioLabel(record.settings.scenario),
       `시드 ${record.seed}`,
       `후보 ${Number(record.settings.generatedPoolSize).toLocaleString()}개`,
@@ -1744,11 +1753,15 @@ function bindActions() {
   $("#hintGuide")?.addEventListener("toggle", (event) => { if (event.target.open) renderHintGuide(); });
   const renderModelHelp = () => {
     const legacy = $("#genModel").value === "legacy";
-    $("#modelHelp").innerHTML = legacy
+    const help = legacy
       ? "<b>페어+주기 v1</b> · 기존 30회 검증 모델입니다. 번호쌍 14%와 출현주기 8%만 사용합니다."
       : "<b>전체 규칙 통합 v2</b> · 홀짝·번호대·끝수·합계·저/고번호·연속·AC·간격·첫 수·이월·이웃·조건부·개별 번호·페어·주기를 모두 사용합니다.";
+    $("#modelHelp").innerHTML = $("#genOrder").value === "random"
+      ? `${help}<br><b>무작위 선택</b> · 조건(고정·제외·필터·겹침)에 맞는 후보를 점수와 무관하게 무작위로 고릅니다. 점수는 참고로만 표시합니다.`
+      : `${help}<br><b>점수 상위</b> · 조건에 맞는 후보를 점수가 높은 순서로 고릅니다. 검증상 점수 상위가 더 잘 맞지는 않았습니다.`;
   };
   $("#genModel").addEventListener("change", renderModelHelp);
+  $("#genOrder").addEventListener("change", renderModelHelp);
   renderModelHelp();
   $("#genBtn").addEventListener("click", () => {
     const errBox = $("#genError");
@@ -1777,6 +1790,7 @@ function bindActions() {
         noConsec: $("#genNoConsec").checked,
         maxOverlap: $("#genMaxOverlap").value === "none" ? null : parseInt($("#genMaxOverlap").value, 10),
         fix, exclude, userExclude, candidatePool,
+        order: $("#genOrder").value,
         seed: $("#genSeed").value.trim(),
         activeRuleIds: selectedExperimentRuleIds(),
       };
