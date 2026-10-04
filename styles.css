@@ -333,6 +333,21 @@ button { font-family: inherit; cursor: pointer; border: none; font-size: 15px; }
   .hint-row { grid-template-columns: 56px 1fr; }
   .hint-row > div { grid-column: 1 / -1; }
 }
+.hint-outlook { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.hint-outlook h4 { margin: 0 0 4px; font-size: 14px; }
+.hint-outlook .table-x { overflow-x: auto; }
+.hint-outlook .bt-table { min-width: 500px; }
+.hint-outlook tr.good td:first-child { color: var(--good); font-weight: 700; }
+.hint-outlook tr.bad td:first-child { color: var(--bad); font-weight: 700; }
+.hint-outlook tr.mid td:first-child { color: var(--warn); font-weight: 700; }
+@media (max-width: 560px) {
+  .hint-outlook .bt-table { min-width: 0; }
+  .hint-outlook .bt-table thead { display: none; }
+  .hint-outlook .bt-table tr { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 8px; padding: 9px 0; border-bottom: 1px solid var(--line2); }
+  .hint-outlook .bt-table td { border: 0; padding: 0; text-align: left; }
+  .hint-outlook .bt-table td:first-child { grid-column: 1 / -1; }
+  .hint-outlook .bt-table td[data-label]::before { content: attr(data-label); display: block; font-size: 10.5px; color: var(--muted); font-weight: 400; }
+}
 .ledger-entry { padding: 0; overflow: hidden; }
 .ledger-entry-head {
   display: flex; justify-content: space-between; gap: 12px; align-items: flex-start;
