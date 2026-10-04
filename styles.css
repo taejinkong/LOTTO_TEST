@@ -238,6 +238,10 @@ button { font-family: inherit; cursor: pointer; border: none; font-size: 15px; }
   font-weight: 700;
 }
 .experiment-panel summary span { color: var(--warn); font-weight: 600; margin-left: 5px; }
+.experiment-panel summary span.guide-tag { color: var(--muted); font-weight: 400; }
+.principles { margin: 6px 0 4px; padding-left: 20px; line-height: 1.65; }
+.principles li { margin: 4px 0; }
+.principles-box { margin-top: 12px; }
 .experiment-panel[open] { padding-bottom: 12px; }
 .experiment-panel[open] summary { border-bottom: 1px solid var(--line); margin-bottom: 12px; }
 .experiment-panel > p, .experiment-panel > div { margin-left: 14px; margin-right: 14px; }

@@ -822,6 +822,130 @@ function generateCombos({
   };
 }
 let currentGeneration = null;
+/* ── 힌트 사용 원칙 ───────────────────
+   조합 확률로 정해지는 값(포함·제외의 배수)은 초기하분포로 정확히 계산하고,
+   데이터에 따라 바뀌는 값(과거 당첨조합의 필터 통과율)은 매번 데이터에서 다시 센다.
+   배수는 '조건에 맞게 무작위로 고른 장'의 고정 당첨금(4등 5만·5등 5천) 기대값 비율이다. */
+function fixedPrizePerLine(pool, winnersInPool, fixedHits, fixedCount) {
+  const free = 6 - fixedCount, total = choose(pool, free);
+  let expected = 0;
+  for (let x = 0; x <= free; x++) {
+    const prize = FIXED_PRIZE_WON[fixedHits + x];
+    if (prize) expected += prize * choose(winnersInPool, x) * choose(pool - winnersInPool, free - x) / total;
+  }
+  return expected;
+}
+function hintPrinciples(fixCount, excludeCount) {
+  const base = fixedPrizePerLine(45, 6, 0, 0);
+  const result = {};
+  if (fixCount) {
+    const pool = 45 - fixCount;
+    result.fix = {
+      chance: choose(45 - fixCount, 6 - fixCount) / TOTAL_COMBINATIONS,
+      right: fixedPrizePerLine(pool, 6 - fixCount, fixCount, fixCount) / base,
+      allMiss: fixedPrizePerLine(pool, 6, 0, fixCount) / base,
+    };
+  }
+  if (excludeCount) {
+    /* 포함 번호가 있으면 '포함은 맞았다'는 전제에서 제외만의 효과를 본다. */
+    const reference = fixedPrizePerLine(45 - fixCount, 6 - fixCount, fixCount, fixCount);
+    const pool = 45 - fixCount - excludeCount;
+    result.exclude = {
+      chance: choose(45 - excludeCount, 6) / TOTAL_COMBINATIONS,
+      right: fixedPrizePerLine(pool, 6 - fixCount, fixCount, fixCount) / reference,
+      oneWrong: 6 - fixCount >= 1 ? fixedPrizePerLine(pool, 5 - fixCount, fixCount, fixCount) / reference : 1,
+    };
+  }
+  return result;
+}
+function filterEvidence(rules) {
+  let passed = 0, total = 0;
+  for (let i = 1; i < D.draws.length; i++) {
+    const checks = experimentalRuleChecks(numsOf(D.draws[i]), numsOf(D.draws[i - 1]));
+    total++;
+    if (rules.every((rule) => checks[rule])) passed++;
+  }
+  const random = randomFilterPassRate(rules, D.prediction.previousNumbers);
+  const history = passed / total;
+  const z = (history - random) / Math.sqrt(random * (1 - random) / total);
+  return { history, random, total, z };
+}
+const ALL_EXPERIMENT_RULES = () => D.ruleAnalysis.rules.map((rule) => rule.id);
+const fmtRatio = (value) => `×${value.toFixed(2)}`;
+const fmtPct = (value) => `${(value * 100).toFixed(value < 0.01 ? 2 : 1)}%`;
+function personalHintAdvice() {
+  const score = hintScorecard();
+  const items = [];
+  const judged = (key, summary, label, advice) => {
+    const rounds = score.rows.filter((row) => row[key]).length;
+    if (!summary || rounds < HINT_MIN_ROUNDS) return;
+    const rate = fmtPct(summary.observed / summary.n);
+    if (summary.z >= 2) items.push(`내 ${label} 적중률 ${rate}(${rounds}회)가 무작위보다 높습니다(z=${summary.z.toFixed(2)}). 우연일 수도 있으니 계속 기록하세요.`);
+    else if (summary.z <= -2) items.push(`내 ${label} 적중률 ${rate}(${rounds}회)가 무작위보다 낮습니다(z=${summary.z.toFixed(2)}). ${advice}`);
+    else items.push(`내 ${label} 적중률 ${rate}(${rounds}회)는 무작위와 구분되지 않습니다(z=${summary.z.toFixed(2)}). ${advice}`);
+  };
+  judged("fixed", score.fixed, "포함 번호", "포함은 틀리면 손해가 커서, 확신이 없으면 비워 두는 편이 낫습니다.");
+  judged("excluded", score.excluded, "제외 번호", "제외를 줄이세요. 맞혀도 이득이 작습니다.");
+  judged("filter", score.filter, "실험 필터", "필터를 꺼도 기대값은 같습니다.");
+  if (!items.length) {
+    items.push(`내 힌트 기록은 채점된 회차 ${score.rows.length}회입니다. ${HINT_MIN_ROUNDS}회가 쌓이면 여기에 개인 판정이 함께 나옵니다(예측 원장 → 힌트 적중률).`);
+  }
+  return items;
+}
+function settingAdvice(settings) {
+  const items = [];
+  const principles = hintPrinciples(settings.fix.length, settings.exclude.length);
+  if (principles.fix) {
+    const { chance, right, allMiss } = principles.fix;
+    items.push(`<b>포함 ${settings.fix.length}개</b>: 무작위로 모두 맞을 확률 ${fmtPct(chance)}. 맞으면 고정 당첨금 ${fmtRatio(right)}, 모두 빗나가면 ${fmtRatio(allMiss)}. ` +
+      (settings.fix.length >= 2
+        ? "2개 이상은 모두 맞을 확률이 급격히 떨어집니다. 가장 확신하는 1개만 남기는 것을 권합니다."
+        : "확신이 있는 번호는 제외보다 포함으로 넣을 때 효과가 큽니다."));
+  }
+  if (principles.exclude) {
+    const { chance, right, oneWrong } = principles.exclude;
+    items.push(`<b>제외 ${settings.exclude.length}개</b>: 아무렇게나 골라도 모두 맞을 확률이 ${fmtPct(chance)}입니다. ` +
+      `${settings.fix.length ? "포함이 맞았다는 전제에서 " : ""}모두 맞으면 ${fmtRatio(right)}, 하나만 틀려도 ${fmtRatio(oneWrong)}. ` +
+      "이득은 작고 실수 비용은 크니 확신이 약한 번호는 빼세요.");
+  }
+  const rules = settings.activeRuleIds || [];
+  if (rules.length) {
+    const evidence = filterEvidence(rules);
+    items.push(`<b>실험 필터 ${rules.length}개</b>: 과거 당첨조합 통과율 ${fmtPct(evidence.history)}(${evidence.total.toLocaleString()}회), 무작위 조합 통과율 ${fmtPct(evidence.random)}. ` +
+      (evidence.z >= 2
+        ? `당첨조합이 더 자주 통과했지만(z=${evidence.z.toFixed(2)}) 여러 필터를 고른 뒤의 결과라 우연일 수 있습니다.`
+        : `당첨조합을 더 잘 골라내지 못하므로(z=${evidence.z.toFixed(2)}) 무작위로 번호를 몇 개 빼는 것과 같습니다. 켜도 기대값은 그대로이고, 걸리는 회차에는 1등 조합이 아예 빠집니다.`));
+  }
+  if (settings.maxOverlap !== 2) {
+    items.push("<b>겹침 상한</b>: 2(고정 제외)로 두면 기대값은 그대로이고 한 장도 못 맞출 확률만 내려갑니다.");
+  }
+  return [...items, ...personalHintAdvice()];
+}
+function renderHintGuide() {
+  const body = $("#hintGuideBody");
+  if (!body || body.dataset.ready) return;
+  const one = hintPrinciples(1, 0).fix, two = hintPrinciples(2, 0).fix;
+  const six = hintPrinciples(0, 6).exclude, twenty = hintPrinciples(0, 20).exclude;
+  const filters = filterEvidence(ALL_EXPERIMENT_RULES());
+  const rules = [
+    `<b>힌트를 무작위로 고르면 평균은 그대로입니다.</b> 맞을 때의 이득과 틀릴 때의 손해가 정확히 상쇄됩니다. ` +
+      `평균보다 나아지려면 무작위보다 자주 맞혀야 하고, 그건 <b>예측 원장 → 힌트 적중률</b>에서 확인합니다.`,
+    `<b>확신이 있으면 제외보다 포함으로.</b> 포함 1개는 무작위 적중 ${fmtPct(one.chance)}로 드물어서, 맞으면 고정 당첨금 ${fmtRatio(one.right)}, 틀리면 ${fmtRatio(one.allMiss)}입니다. ` +
+      `제외 6개는 아무렇게나 골라도 ${fmtPct(six.chance)}가 모두 맞고, 다 맞아도 ${fmtRatio(six.right)}에 그칩니다.`,
+    `<b>확신이 약한 제외는 넣지 마세요.</b> 제외 6개 중 하나만 틀려도 ${fmtRatio(six.oneWrong)}가 됩니다. ` +
+      `제외로 큰 효과를 보려면 20개쯤 빼야 하는데(다 맞으면 ${fmtRatio(twenty.right)}), 그게 모두 맞을 확률은 ${fmtPct(twenty.chance)}입니다.`,
+    `<b>포함은 1개가 적당합니다.</b> 2개가 모두 맞을 확률은 ${fmtPct(two.chance)}이고, 둘 다 빗나가면 ${fmtRatio(two.allMiss)}입니다.`,
+    filters.z >= 2
+      ? `<b>실험 필터는 아직 근거가 약합니다.</b> 6개를 모두 켜면 과거 당첨조합 통과율 ${fmtPct(filters.history)}, 무작위 조합 ${fmtPct(filters.random)}로 ` +
+        `당첨조합이 더 자주 통과했지만(z=${filters.z.toFixed(2)}), 여러 필터를 고른 뒤의 결과라 우연일 수 있습니다.`
+      : `<b>실험 필터는 무작위 제외와 같습니다.</b> 6개를 모두 켜면 과거 당첨조합 통과율 ${fmtPct(filters.history)}, 무작위 조합 ${fmtPct(filters.random)}로 ` +
+        `당첨조합을 더 잘 골라내지 못합니다(z=${filters.z.toFixed(2)}). 켜도 기대값은 그대로입니다.`,
+    `<b>여러 장은 한 번에, 겹침 상한 2로.</b> 고정 번호는 겹침에서 빼고 셉니다. 기대값은 같고 한 장도 못 맞출 확률만 내려갑니다.`,
+  ];
+  body.innerHTML = `<ol class="principles">${rules.map((rule) => `<li>${rule}</li>`).join("")}</ol>` +
+    `<p class="muted"><small>배수는 조건에 맞게 무작위로 고른 장의 고정 당첨금(4등 5만 원·5등 5천 원) 기대값을 힌트가 없을 때와 비교한 값입니다. 필터 통과율은 현재 데이터로 매번 다시 계산합니다.</small></p>`;
+  body.dataset.ready = "1";
+}
 function renderHintOutlook(outlook, lines, settings) {
   const box = el("div", "hint-outlook");
   const pct = (value) => `${(value * 100).toFixed(value < 0.01 ? 2 : 1)}%`;
@@ -847,6 +971,7 @@ function renderHintOutlook(outlook, lines, settings) {
     `<p class="muted">무작위로 골랐다면 이 조건이 모두 맞을 확률은 <b>${pct(outlook.p)}</b>입니다. ` +
     `모두 맞으면 고정 당첨금이 평균의 <b>${ratio(right.money, average.money).toFixed(2)}배</b>, ${worst.label.replace(/면$/, "")}면 <b>${ratio(worst.money, average.money).toFixed(2)}배</b>가 되고, ` +
     `확률로 가중하면 힌트가 없을 때와 같습니다. 평균보다 나아지려면 힌트가 무작위보다 자주 맞아야 하며, 그건 <b>예측 원장 → 힌트 적중률</b>에서 확인할 수 있습니다.</p>` +
+    `<div class="callout compact principles-box"><b>이 설정에 대한 조언</b><ul class="principles">${settingAdvice(settings).map((item) => `<li>${item}</li>`).join("")}</ul></div>` +
     `<p class="muted"><small>'모두 맞으면'은 조건에 맞는 당첨조합 ${outlook.samples.toLocaleString()}개 표본 추정, 나머지는 정확값에서 역산했습니다.</small></p>`;
   return box;
 }
@@ -1507,6 +1632,7 @@ function exportLedger() {
 /* ── 이벤트 바인딩 (추천/QP/조회) ─────── */
 function bindActions() {
   renderExperimentRules();
+  $("#hintGuide")?.addEventListener("toggle", (event) => { if (event.target.open) renderHintGuide(); });
   const renderModelHelp = () => {
     const legacy = $("#genModel").value === "legacy";
     $("#modelHelp").innerHTML = legacy
