@@ -251,14 +251,14 @@ def build_rule_analysis(rows: list[Row]) -> dict:
 
 def validation_summary() -> dict:
     return {
-        "rounds": "1214~1243회",
+        "rounds": "1215~1244회",
         "count": 30,
         "sampleSize": 20_000,
         "metric": "실제 당첨 조합의 표본 추정 백분위(낮을수록 우수)",
-        "trainingBase": "1~1243회 전체(2026-09-06부터). 이전에는 606회 이후만 학습했다.",
+        "trainingBase": "1~1244회 전체(2026-09-06부터). 이전에는 606회 이후만 학습했다.",
         "variants": [
-            {"label": "페어+주기 v1", "averagePercentile": 44.5, "medianPercentile": 42.6},
-            {"label": "전체 규칙 통합 v2", "averagePercentile": 45.5, "medianPercentile": 45.7},
+            {"label": "페어+주기 v1", "averagePercentile": 44.7, "medianPercentile": 42.9},
+            {"label": "전체 규칙 통합 v2", "averagePercentile": 45.9, "medianPercentile": 45.6},
             {
                 "label": "순수 무작위 기대 기준",
                 "averagePercentile": 50.0,
