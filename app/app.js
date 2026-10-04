@@ -510,7 +510,7 @@ function overlapCount(left, right) {
   const rightSet = new Set(right);
   return left.filter((number) => rightSet.has(number)).length;
 }
-function portfolioStats(combos) {
+function portfolioStats(combos, fixedCount = 0) {
   const coverage = new Set(combos.flatMap((combo) => combo.numbers)).size;
   let maxOverlap = 0;
   for (let i = 0; i < combos.length; i++) {
@@ -518,7 +518,7 @@ function portfolioStats(combos) {
       maxOverlap = Math.max(maxOverlap, overlapCount(combos[i].numbers, combos[j].numbers));
     }
   }
-  return { coverage, maxOverlap };
+  return { coverage, maxOverlap, freeOverlap: Math.max(0, maxOverlap - fixedCount) };
 }
 
 /* ── 포트폴리오 진단 ───────────────────────────────────────────────
@@ -718,9 +718,6 @@ function generateCombos({
   if (fix.length > 6) throw new Error("고정 번호는 최대 6개입니다.");
   if (fix.some((number) => excluded.has(number))) throw new Error("고정 번호와 제외 번호가 겹칩니다.");
   if (!seed.trim()) throw new Error("재현 시드를 입력해 주세요.");
-  if (limit !== null && fix.length > limit) {
-    throw new Error(`고정 번호 ${fix.length}개는 모든 조합에 함께 들어가므로 겹침 상한 ${limit}개를 지킬 수 없습니다. 고정을 줄이거나 상한을 올려 주세요.`);
-  }
   const available = Array.from({ length: 45 }, (_, i) => i + 1).filter((number) => !fixed.has(number) && !excluded.has(number));
   const needed = 6 - fix.length;
   if (needed > available.length) throw new Error("제외수가 너무 많아 조합을 만들 수 없습니다.");
@@ -756,6 +753,7 @@ function generateCombos({
       return { item, lo, hi };
     });
     const fixedSet = new Set(fix);
+    const overlapLimit = limit + fix.length;
     let cap = Math.ceil(count * 6 / 45) + 1;
     const used = new Int32Array(46);
     const picked = [];
@@ -769,9 +767,11 @@ function generateCombos({
           skipped.push(entry);
           continue;
         }
+        /* 고정 번호는 모든 조합에 똑같이 들어가므로 겹침 상한은 나머지 번호끼리만 센다.
+           예전에는 고정까지 세어 고정 1개 + 상한 2개면 100장 중 49장밖에 못 만들었다. */
         let ok = true;
         for (let i = 0; i < masks.length; i++) {
-          if (popcount32(masks[i][0] & entry.lo) + popcount32(masks[i][1] & entry.hi) > limit) { ok = false; break; }
+          if (popcount32(masks[i][0] & entry.lo) + popcount32(masks[i][1] & entry.hi) > overlapLimit) { ok = false; break; }
         }
         if (!ok) continue;
         picked.push(entry.item);
@@ -802,21 +802,21 @@ function generateCombos({
     if (!best || combos.length > best.combos.length) best = result;
     if (combos.length === count) break;
     /* 조금 모자란 것은 풀을 넓히면 채워지지만, 크게 모자라면 제약 자체가 불가능한
-       경우다(고정 번호 1개 + 겹침 상한 2개 등). 12만 개까지 헛돌며 10초를 쓰지 않는다. */
+       경우다(제외 번호가 아주 많거나 고정이 5개라 남는 번호가 적은 경우 등). 12만 개까지 헛돌며 10초를 쓰지 않는다. */
     if (combos.length < count * 0.8) break;
   }
   if (!best || !best.combos.length) throw new Error("조건을 만족하는 조합을 찾지 못했습니다.");
   if (best.combos.length < count) {
-    const cause = fix.length
-      ? `고정 번호 ${fix.join(", ")}가 모든 조합에 들어가 겹침 여유가 ${Math.max(0, limit - fix.length)}개뿐입니다. 고정을 빼거나, `
+    const cause = fix.length || exclude.length
+      ? `고정·제외를 빼면 ${available.length}개 번호에서 ${needed}개씩 고르게 되어 조합 여유가 적습니다. 고정·제외를 줄이거나, `
       : "";
-    throw new Error(`겹침 상한 ${limit}개를 지키며 ${count}개를 만들지 못했습니다(${best.combos.length}개까지 가능). ${cause}상한을 올리거나 장수를 줄여 주세요.`);
+    throw new Error(`겹침 상한 ${limit}개(고정 번호 제외)를 지키며 ${count}개를 만들지 못했습니다(${best.combos.length}개까지 가능). ${cause}상한을 올리거나 장수를 줄여 주세요.`);
   }
   const diagnostics = portfolioDiagnostics(best.combos);
   diagnostics.hintOutlook = hintOutlook(best.combos, { fix, exclude, activeRuleIds }, diagnostics);
   return {
     ...best,
-    ...portfolioStats(best.combos),
+    ...portfolioStats(best.combos, fix.length),
     diagnostics,
     historySize: history.size,
   };
@@ -902,7 +902,7 @@ function renderDiagnostics(diagnostics, settings) {
   return card;
 }
 function renderCombos(result, settings) {
-  const { combos, generatedPoolSize, coverage, maxOverlap, diagnostics, usageCap, historySize } = result;
+  const { combos, generatedPoolSize, coverage, maxOverlap, freeOverlap, diagnostics, usageCap, historySize } = result;
   const { fix, poolSize, modelName, seed, activeRuleIds } = settings;
   const wrap = $("#genResults"); wrap.innerHTML = "";
   const card = el("div", "card");
@@ -911,7 +911,7 @@ function renderCombos(result, settings) {
   card.appendChild(el("div", "generation-meta",
     `<span class="meta-chip">시드 ${escapeHtml(seed)}</span>` +
     `<span class="meta-chip">사용 번호 ${coverage}개</span>` +
-    `<span class="meta-chip${maxOverlap >= 3 ? " warn" : ""}">최대 공통 ${maxOverlap}개</span>` +
+    `<span class="meta-chip${freeOverlap >= 3 ? " warn" : ""}">최대 공통 ${fix.length ? `${freeOverlap}개 + 고정 ${fix.length}개` : `${maxOverlap}개`}</span>` +
     (usageCap ? `<span class="meta-chip">번호 사용 상한 ${usageCap}장</span>` : "") +
     `<span class="meta-chip">과거 1등 ${historySize.toLocaleString()}개 제외</span>` +
     `<span class="meta-chip${activeRuleIds.length ? " warn" : ""}">실험 필터 ${activeRuleIds.length}개</span>`
@@ -946,6 +946,7 @@ function renderCombos(result, settings) {
       noConsecutive: settings.noConsec,
       diversify: Number.isFinite(settings.maxOverlap),
       maxOverlap: Number.isFinite(settings.maxOverlap) ? settings.maxOverlap : null,
+      overlapExcludesFixed: true,
       usageCap: usageCap ?? null,
       fixed: [...fix],
       excluded: [...settings.exclude],
@@ -1022,7 +1023,9 @@ function generationText(record) {
   const conditions = [
     scenarioLabel(settings.scenario),
     settings.noConsecutive ? "연속번호 제외" : "연속번호 허용",
-    Number.isFinite(settings.maxOverlap) ? `조합 간 겹침 최대 ${settings.maxOverlap}개` : "조합 분산 제한 없음",
+    Number.isFinite(settings.maxOverlap)
+      ? `조합 간 겹침 최대 ${settings.maxOverlap}개${settings.overlapExcludesFixed && settings.fixed?.length ? "(고정 번호 제외)" : ""}`
+      : "조합 분산 제한 없음",
     settings.usageCap ? `번호 하나가 들어간 최대 장수 ${settings.usageCap}장` : "번호 사용 상한 없음",
     settings.fixed?.length ? `고정 번호 ${settings.fixed.join(", ")}` : "고정 번호 없음",
     settings.excluded?.length ? `제외 번호 ${settings.excluded.join(", ")}` : "제외 번호 없음",
@@ -1446,7 +1449,9 @@ function renderLedger() {
       scenarioLabel(record.settings.scenario),
       `시드 ${record.seed}`,
       `후보 ${Number(record.settings.generatedPoolSize).toLocaleString()}개`,
-      Number.isFinite(record.settings.maxOverlap) ? `겹침 최대 ${record.settings.maxOverlap}개` : "분산 제한 없음",
+      Number.isFinite(record.settings.maxOverlap)
+        ? `겹침 최대 ${record.settings.maxOverlap}개${record.settings.overlapExcludesFixed && record.settings.fixed?.length ? "(고정 제외)" : ""}`
+        : "분산 제한 없음",
       filters.length ? `실험: ${filters.join("·")}` : "실험 필터 없음",
     ];
     const lines = record.lines.map((line, index) => {
