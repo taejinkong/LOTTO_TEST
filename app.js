@@ -903,7 +903,9 @@ function saveCurrentGeneration() {
   }));
   records.unshift(record);
   saveSavedGenerations(records.slice(0, 50));
+  recordHint(record);
   renderSavedGenerations();
+  renderHintScore();
   return { duplicate: false, record };
 }
 function generationText(record) {
@@ -1139,7 +1141,189 @@ function scenarioLabel(scenarioName) {
   if (scenarioName === "all") return "전체 시나리오";
   return D.prediction.scenarios.find((scenario) => scenario.name === scenarioName)?.description || scenarioName;
 }
+/* ── 힌트 적중률 ───────────────────────
+   포함·제외 번호와 실험 필터가 무작위로 고른 것보다 잘 맞는지 잰다.
+   힌트를 무작위로 고르면 기대 당첨금은 힌트가 없을 때와 같다. 힌트가 도움이 되려면
+   적중률이 무작위 기준(포함 6/45, 제외 39/45, 필터는 전체 조합 통과율)보다 높아야 한다.
+   판매 마감(추첨일 20시) 전에 생성한 기록만 센다. 사후 입력은 실력 측정을 오염시킨다. */
+const HINT_LOG_KEY = "lottoHintLogV1";
+const HINT_MIN_ROUNDS = 20;
+function loadHintLog() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HINT_LOG_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function hintOf(record) {
+  const settings = record.settings || {};
+  return {
+    targetRound: record.targetRound,
+    generatedAt: record.generatedAt || record.lockedAt || record.savedAt,
+    fixed: [...(settings.fixed || [])].sort((a, b) => a - b),
+    excluded: [...(settings.excluded || [])].sort((a, b) => a - b),
+    rules: [...(settings.experimentalRules || [])].sort(),
+  };
+}
+const hintKey = (hint) => [hint.targetRound, hint.fixed.join(","), hint.excluded.join(","), hint.rules.join(",")].join("|");
+const hasHint = (hint) => hint.fixed.length || hint.excluded.length || hint.rules.length;
+/* 저장 목록은 50개까지만 남으므로 힌트는 따로 쌓는다. */
+function recordHint(record) {
+  const hint = hintOf(record);
+  if (!hasHint(hint)) return;
+  const log = loadHintLog();
+  const key = hintKey(hint);
+  const existing = log.find((item) => hintKey(item) === key);
+  if (existing) {
+    if (String(hint.generatedAt) < String(existing.generatedAt)) existing.generatedAt = hint.generatedAt;
+  } else {
+    log.push(hint);
+  }
+  try { localStorage.setItem(HINT_LOG_KEY, JSON.stringify(log)); } catch { /* 저장 실패는 채점에 영향 없음 */ }
+}
+const filterPassCache = new Map();
+function randomFilterPassRate(rules, previousNumbers) {
+  const key = rules.join(",") + "|" + previousNumbers.join(",");
+  if (filterPassCache.has(key)) return filterPassCache.get(key);
+  const rng = createSeededRandom(key);
+  const all = Array.from({ length: 45 }, (_, i) => i + 1);
+  const trials = 40000;
+  let passed = 0;
+  for (let i = 0; i < trials; i++) {
+    const checks = experimentalRuleChecks(sample(all, 6, rng).sort((a, b) => a - b), previousNumbers);
+    if (rules.every((rule) => checks[rule])) passed++;
+  }
+  filterPassCache.set(key, passed / trials);
+  return passed / trials;
+}
+function hintScorecard() {
+  const byKey = new Map();
+  for (const hint of [...loadHintLog(), ...loadLedger().map(hintOf), ...loadSavedGenerations().map(hintOf)]) {
+    if (!hasHint(hint)) continue;
+    const key = hintKey(hint);
+    const prev = byKey.get(key);
+    if (!prev || String(hint.generatedAt) < String(prev.generatedAt)) byKey.set(key, hint);
+  }
+  const drawByRound = new Map(D.draws.map((row) => [row[0], row]));
+  /* 한 회차에 여러 세트를 저장해도 같은 번호·같은 필터는 한 번만 센다.
+     같은 사건을 두 번 세면 표본이 부풀어 z가 과장된다. */
+  const byRound = new Map();
+  let late = 0, pending = 0;
+  for (const hint of byKey.values()) {
+    const draw = drawByRound.get(hint.targetRound);
+    if (!draw) { pending++; continue; }
+    if (!hint.generatedAt || new Date(hint.generatedAt) >= new Date(`${draw[1]}T20:00:00+09:00`)) { late++; continue; }
+    const merged = byRound.get(hint.targetRound) || { targetRound: hint.targetRound, fixed: new Set(), excluded: new Set(), ruleSets: new Map() };
+    hint.fixed.forEach((n) => merged.fixed.add(n));
+    hint.excluded.forEach((n) => merged.excluded.add(n));
+    if (hint.rules.length) merged.ruleSets.set(hint.rules.join(","), hint.rules);
+    byRound.set(hint.targetRound, merged);
+  }
+  const rows = [];
+  for (const merged of byRound.values()) {
+    const draw = drawByRound.get(merged.targetRound);
+    const ruleSets = [...merged.ruleSets.values()];
+    const hint = {
+      targetRound: merged.targetRound,
+      fixed: [...merged.fixed].sort((a, b) => a - b),
+      excluded: [...merged.excluded].sort((a, b) => a - b),
+      rules: ruleSets.length ? ruleSets.reduce((widest, rules) => (rules.length > widest.length ? rules : widest)) : [],
+    };
+    const winning = new Set(numsOf(draw));
+    const row = { hint, draw };
+    /* 같은 회차 안에서 번호들은 독립이 아니므로 초기하분포로 기대값·분산을 잡는다. */
+    const hyper = (m) => ({ mean: m * 6 / 45, variance: m * (6 / 45) * (39 / 45) * (45 - m) / 44 });
+    if (hint.fixed.length) {
+      const { mean, variance } = hyper(hint.fixed.length);
+      row.fixed = { n: hint.fixed.length, hits: hint.fixed.filter((n) => winning.has(n)).length, mean, variance };
+    }
+    if (hint.excluded.length) {
+      const { mean, variance } = hyper(hint.excluded.length);
+      const misses = hint.excluded.filter((n) => winning.has(n)).length;
+      row.excluded = { n: hint.excluded.length, correct: hint.excluded.length - misses, misses, mean: hint.excluded.length - mean, variance };
+    }
+    if (hint.rules.length) {
+      const previous = drawByRound.get(hint.targetRound - 1);
+      const previousNumbers = previous ? numsOf(previous) : [];
+      const checks = experimentalRuleChecks(numsOf(draw), previousNumbers);
+      const p = randomFilterPassRate(hint.rules, previousNumbers);
+      row.filter = { passed: hint.rules.every((rule) => checks[rule]), failedRules: hint.rules.filter((rule) => !checks[rule]), p };
+    }
+    rows.push(row);
+  }
+  rows.sort((a, b) => b.hint.targetRound - a.hint.targetRound);
+  const sum = (items, pick) => items.reduce((total, item) => total + pick(item), 0);
+  const summarize = (items, observed, expected, variance, total) => {
+    if (!items.length) return null;
+    const obs = sum(items, observed), exp = sum(items, expected), varSum = sum(items, variance), n = sum(items, total);
+    return { count: items.length, n, observed: obs, expected: exp, z: varSum > 0 ? (obs - exp) / Math.sqrt(varSum) : 0 };
+  };
+  const withFixed = rows.filter((row) => row.fixed);
+  const withExcluded = rows.filter((row) => row.excluded);
+  const withFilter = rows.filter((row) => row.filter);
+  return {
+    rows, late, pending,
+    rounds: new Set(rows.map((row) => row.hint.targetRound)).size,
+    fixed: summarize(withFixed, (r) => r.fixed.hits, (r) => r.fixed.mean, (r) => r.fixed.variance, (r) => r.fixed.n),
+    excluded: summarize(withExcluded, (r) => r.excluded.correct, (r) => r.excluded.mean, (r) => r.excluded.variance, (r) => r.excluded.n),
+    filter: summarize(withFilter, (r) => (r.filter.passed ? 1 : 0), (r) => r.filter.p, (r) => r.filter.p * (1 - r.filter.p), () => 1),
+  };
+}
+function hintVerdict(summary, rounds) {
+  if (!summary) return { cls: "", text: "기록 없음" };
+  if (rounds < HINT_MIN_ROUNDS) return { cls: "", text: `표본 부족 (${rounds}/${HINT_MIN_ROUNDS}회)` };
+  if (summary.z >= 2) return { cls: "good", text: `무작위보다 높음 (z=${summary.z.toFixed(2)})` };
+  if (summary.z <= -2) return { cls: "bad", text: `무작위보다 낮음 (z=${summary.z.toFixed(2)})` };
+  return { cls: "", text: `무작위와 구분 안 됨 (z=${summary.z.toFixed(2)})` };
+}
+function renderHintScore() {
+  const box = $("#hintScore");
+  if (!box) return;
+  const score = hintScorecard();
+  const pct = (value) => `${(value * 100).toFixed(1)}%`;
+  const tile = (title, summary, rate, base, unit) => {
+    const roundsFor = score.rows.filter((row) => row[unit]).length;
+    const verdict = hintVerdict(summary, roundsFor);
+    const body = summary
+      ? `<div class="big">${pct(rate(summary))}</div>` +
+        `<div class="lbl">${title} · 무작위 기준 ${base(summary)}</div>` +
+        `<div class="lbl">${summary.observed}/${summary.n} · 기대 ${summary.expected.toFixed(1)}</div>`
+      : `<div class="big">–</div><div class="lbl">${title}</div>`;
+    return `<div class="kpi hint-tile ${verdict.cls}">${body}<div class="hint-verdict">${escapeHtml(verdict.text)}</div></div>`;
+  };
+  const tiles =
+    tile("포함 번호 적중", score.fixed, (s) => s.observed / s.n, () => "13.3%", "fixed") +
+    tile("제외 번호 적중", score.excluded, (s) => s.observed / s.n, () => "86.7%", "excluded") +
+    tile("필터 통과", score.filter, (s) => s.observed / s.n, (s) => pct(s.expected / s.n), "filter");
+  const list = score.rows.slice(0, 12).map(({ hint, draw, fixed, excluded, filter }) => {
+    const winning = new Set(numsOf(draw));
+    const mark = (numbers, good) => numbers.map((n) => `<span class="hint-num ${good(n) ? "ok" : "ng"}">${n}</span>`).join("");
+    const parts = [];
+    if (fixed) parts.push(`포함 ${mark(hint.fixed, (n) => winning.has(n))} <small>${fixed.hits}/${fixed.n}</small>`);
+    if (excluded) parts.push(`제외 ${mark(hint.excluded, (n) => !winning.has(n))} <small>${excluded.correct}/${excluded.n}</small>`);
+    if (filter) {
+      parts.push(filter.passed
+        ? `필터 ${hint.rules.length}개 <span class="hint-num ok">통과</span>`
+        : `필터 <span class="hint-num ng">탈락</span> <small>${escapeHtml(filter.failedRules.map(ruleLabel).join(", "))}</small>`);
+    }
+    return `<div class="hint-row"><b>${hint.targetRound}회</b><span class="muted">${numsOf(draw).join(" ")}</span><div>${parts.join(" · ")}</div></div>`;
+  }).join("");
+  const notes = [];
+  if (score.pending) notes.push(`추첨 대기 ${score.pending}건`);
+  if (score.late) notes.push(`판매 마감 이후 생성 ${score.late}건은 제외`);
+  box.innerHTML = `<div class="card hint-card">` +
+    `<h3>힌트 적중률</h3>` +
+    `<p class="muted">저장하거나 잠근 생성 결과의 포함·제외 번호와 실험 필터를 추첨 결과로 채점합니다. ` +
+    `힌트를 무작위로 고르면 기대 당첨금은 힌트가 없을 때와 같습니다. 적중률이 무작위 기준보다 꾸준히 높을 때만 힌트가 기대값을 올립니다. ` +
+    `<b>${HINT_MIN_ROUNDS}회 이상</b> 쌓이고 z가 2 이상이어야 '무작위보다 높음'으로 판정합니다. 판매 마감(추첨일 20시) 전에 생성한 기록만 셉니다.</p>` +
+    `<div class="kpis diagnostic">${tiles}</div>` +
+    (list ? `<div class="hint-list">${list}</div>` : `<p class="muted">아직 채점할 힌트 기록이 없습니다. 포함·제외 번호나 실험 필터를 넣어 생성한 뒤 <b>저장</b> 또는 <b>예측 잠금</b>을 누르면 다음 추첨 후 여기서 채점됩니다.</p>`) +
+    (notes.length ? `<p class="muted"><small>${notes.join(" · ")}</small></p>` : "") +
+    `</div>`;
+}
 function renderLedger() {
+  renderHintScore();
   const records = loadLedger().sort((a, b) => String(b.lockedAt).localeCompare(String(a.lockedAt)));
   const list = $("#ledgerList");
   if (!records.length) {
@@ -1183,6 +1367,7 @@ async function lockCurrentPrediction() {
   if (records.some((record) => record.receipt === receipt)) return { duplicate: true, receipt };
   records.push({ ...locked, id: receipt.slice(0, 16), receipt });
   saveLedger(records);
+  recordHint(locked);
   renderLedger();
   return { duplicate: false, receipt };
 }
