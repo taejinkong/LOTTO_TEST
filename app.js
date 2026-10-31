@@ -1310,7 +1310,8 @@ function renderSavedGenerations() {
     return `<div class="saved-generation" data-id="${escapeHtml(record.id)}">` +
       `<div><b>${record.targetRound}회 · ${record.lines.length}조합</b>` +
       `<span>${escapeHtml(record.modelName || record.modelVersion || record.model)} · 시드 ${escapeHtml(record.seed)} · ${escapeHtml(savedAt)}</span></div>` +
-      `<div class="saved-actions"><button class="ghost slim" data-export-saved>TXT</button>` +
+      `<div class="saved-actions"><button class="ghost slim" data-buy-saved>구매 기록</button>` +
+      `<button class="ghost slim" data-export-saved>TXT</button>` +
       `<button class="ghost slim danger" data-delete-saved>삭제</button></div></div>`;
   }).join("");
 }
@@ -1747,6 +1748,526 @@ function exportLedger() {
   URL.revokeObjectURL(url);
 }
 
+/* ── 구매 기록 ─────────────────────────
+   실제로 산 번호를 회차별로 쌓고, 추첨 결과로 채점해 무작위 기대값과 나란히 본다.
+   예측 원장(잠금·영수증)과 달리 사후 입력을 허용한다. 실력 측정이 아니라 지출·당첨 장부다.
+   기대값은 모두 조합론으로 정확히 계산되며, 같은 회차 조합끼리는 독립이 아니라 z는 근사다. */
+const PURCHASES_KEY = "lottoPurchasesV1";
+const PRICE_PER_LINE = 1000;
+const TOTAL_COMBOS = 8145060;
+/* 등수별 조합 수: 1등 1, 2등 6, 3등 6×38, 4등 C(6,4)×C(39,2), 5등 C(6,3)×C(39,3) */
+const GRADE_COMBOS = { 1: 1, 2: 6, 3: 228, 4: 11115, 5: 182780 };
+const FIXED_PRIZE = { 4: 50000, 5: 5000 };
+const ANY_PRIZE_P = Object.values(GRADE_COMBOS).reduce((sum, value) => sum + value, 0) / TOTAL_COMBOS;
+/* 한 장의 일치 개수는 초기하분포: 평균 6×6/45, 분산 6·(6/45)·(39/45)·(39/44) */
+const MATCH_MEAN = 0.8;
+const MATCH_VAR = 6 * (6 / 45) * (39 / 45) * (39 / 44);
+/* 연속 번호가 하나도 없는 조합은 C(40,6)개 */
+const CONSEC_P = 1 - 3838380 / TOTAL_COMBOS;
+const PURCHASE_MODES = { app: "앱 생성", auto: "자동", manual: "수동", semi: "반자동", other: "기타" };
+const POPULARITY_WINDOW = 500;
+
+function loadPurchases() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PURCHASES_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function savePurchases(records) {
+  localStorage.setItem(PURCHASES_KEY, JSON.stringify(records));
+}
+function purchaseSignature(record) {
+  return [record.round, ...record.lines.map((line) => line.numbers.join(",")).sort()].join("|");
+}
+
+/* 복권 QR: ...?v=1247q060719212944q071021243644...
+   회차 4자리 뒤에 게임마다 글자 1개 + 두 자리 번호 6개가 붙는다. 글자는 자동·수동을
+   믿을 만하게 구분하지 않아(온라인 수동 구매도 q로 나온 사례가 있다) 원문만 보관한다. */
+function parseQrPayload(text) {
+  const tickets = [];
+  for (const match of String(text).matchAll(/[?&]v=(\d{4})((?:[a-z]\d{12})+)/gi)) {
+    const round = parseInt(match[1], 10);
+    const lines = Array.from(match[2].matchAll(/([a-z])(\d{12})/gi), ([, type, digits]) => ({
+      numbers: Array.from({ length: 6 }, (_, i) => parseInt(digits.slice(i * 2, i * 2 + 2), 10)),
+      qrType: type.toLowerCase(),
+    }));
+    tickets.push({ round, lines });
+  }
+  return tickets;
+}
+function validLine(numbers) {
+  return numbers.length === 6 && new Set(numbers).size === 6 && numbers.every((n) => Number.isInteger(n) && n >= 1 && n <= 45);
+}
+/* QR 링크가 있으면 그것을, 없으면 한 줄에 번호 6개씩(앱 TXT의 '001.' 머리말 허용) 읽는다. */
+function parsePurchaseText(text) {
+  const tickets = parseQrPayload(text);
+  if (tickets.length) {
+    const rounds = [...new Set(tickets.map((ticket) => ticket.round))];
+    if (rounds.length > 1) throw new Error(`QR 회차가 섞여 있습니다(${rounds.join(", ")}회). 회차별로 따로 추가해 주세요.`);
+    const lines = tickets.flatMap((ticket) => ticket.lines);
+    const bad = lines.find((line) => !validLine(line.numbers));
+    if (bad) throw new Error(`QR 번호를 읽지 못했습니다: ${bad.numbers.join(" ")}`);
+    return { round: rounds[0], lines: lines.map((line) => ({ ...line, numbers: [...line.numbers].sort((a, b) => a - b) })), source: "qr" };
+  }
+  const lines = [];
+  String(text).split(/\r?\n/).forEach((raw, index) => {
+    const body = raw.replace(/^\s*\d{1,3}\s*[.)]\s+/, "");
+    const numbers = (body.match(/\d+/g) || []).map(Number);
+    if (!numbers.length) return;
+    if (!validLine(numbers)) throw new Error(`${index + 1}번째 줄은 1~45 사이 서로 다른 번호 6개가 아닙니다: "${raw.trim()}"`);
+    lines.push({ numbers: numbers.sort((a, b) => a - b) });
+  });
+  return { round: null, lines, source: "text" };
+}
+
+function linePrize(grade, draw) {
+  if (grade === 1) return Math.round(amtOf(draw) * 1e8);
+  return FIXED_PRIZE[grade] ?? (grade ? null : 0);
+}
+/* 1등은 data.js의 1인당 금액(0.1억 단위 반올림), 2·3등은 금액이 없어 직접 입력을 받는다. */
+function purchaseOutcome(record) {
+  const draw = D.draws.find((row) => row[0] === record.round);
+  if (!draw) return { draw: null, results: [], prize: 0, unknownPrize: false, best: null };
+  const results = record.lines.map((line) => {
+    const result = lineGrade(line.numbers, draw);
+    return { ...result, prize: linePrize(result.grade, draw) };
+  });
+  const unknownPrize = results.some((result) => result.prize == null);
+  const graded = results.filter((result) => result.grade);
+  const best = graded.length ? Math.min(...graded.map((result) => result.grade)) : null;
+  const override = Number.isFinite(record.prizeOverride) ? record.prizeOverride : null;
+  const prize = override ?? results.reduce((sum, result) => sum + (result.prize || 0), 0);
+  return { draw, results, prize, unknownPrize: unknownPrize && override == null, best, override };
+}
+
+function zLabel(z) {
+  if (!Number.isFinite(z)) return "-";
+  const text = `${z >= 0 ? "+" : ""}${z.toFixed(2)}`;
+  return Math.abs(z) >= 1.96 ? `<b>${text}</b>` : text;
+}
+/* 카이제곱 상위 꼬리 확률(Wilson–Hilferty 근사). 자유도 44에서는 충분히 정확하다. */
+function chiSquareP(chi, df) {
+  const t = (Math.cbrt(chi / df) - (1 - 2 / (9 * df))) / Math.sqrt(2 / (9 * df));
+  return 0.5 * erfc(t / Math.SQRT2);
+}
+function erfc(x) {
+  const t = 1 / (1 + 0.5 * Math.abs(x));
+  const y = t * Math.exp(-x * x - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
+    t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+  return x >= 0 ? y : 2 - y;
+}
+const won = (value) => `${Math.round(value).toLocaleString()}원`;
+const low12Of = (numbers) => numbers.filter((n) => n <= 12).length;
+
+/* 성적 묶음: 장수·평균 일치·5등 이상·회수율을 무작위 기대와 비교한다. */
+function purchaseStats(entries) {
+  const lines = entries.flatMap(({ record, outcome }) => outcome.results.map((result) => ({ result, record })));
+  const n = lines.length;
+  const spent = n * PRICE_PER_LINE;
+  const prize = entries.reduce((sum, { outcome }) => sum + outcome.prize, 0);
+  const gradeCounts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  lines.forEach(({ result }) => { if (result.grade) gradeCounts[result.grade]++; });
+  const anyPrize = Object.values(gradeCounts).reduce((sum, value) => sum + value, 0);
+  const meanMatches = n ? lines.reduce((sum, { result }) => sum + result.matches, 0) / n : 0;
+  const expectedAny = n * ANY_PRIZE_P;
+  return {
+    rounds: new Set(entries.map(({ record }) => record.round)).size,
+    n, spent, prize, gradeCounts, anyPrize, meanMatches, expectedAny,
+    zMatches: n ? (meanMatches - MATCH_MEAN) / Math.sqrt(MATCH_VAR / n) : NaN,
+    zAny: n ? (anyPrize - expectedAny) / Math.sqrt(n * ANY_PRIZE_P * (1 - ANY_PRIZE_P)) : NaN,
+    unknownPrize: entries.some(({ outcome }) => outcome.unknownPrize),
+  };
+}
+
+function renderPurchaseSummary(entries, pendingLines) {
+  const box = $("#purchaseSummary");
+  if (!entries.length) {
+    box.innerHTML = pendingLines
+      ? `<div class="card empty-state">추첨을 기다리는 구매 ${pendingLines}장이 있습니다. 추첨 결과가 반영되면 여기에 성적이 쌓입니다.</div>`
+      : "";
+    return;
+  }
+  const s = purchaseStats(entries);
+  const fixedExpected = s.n * (FIXED_PRIZE[4] * GRADE_COMBOS[4] + FIXED_PRIZE[5] * GRADE_COMBOS[5]) / TOTAL_COMBOS;
+  const fixedWon = s.gradeCounts[4] * FIXED_PRIZE[4] + s.gradeCounts[5] * FIXED_PRIZE[5];
+  const kpi = (big, label) => `<div class="kpi"><div class="big">${big}</div><div class="lbl">${label}</div></div>`;
+  const gradeRows = [1, 2, 3, 4, 5].map((grade) => {
+    const expected = s.n * GRADE_COMBOS[grade] / TOTAL_COMBOS;
+    const shown = expected >= 0.01 ? `${expected.toFixed(2)}장` : "0.01장 미만";
+    return `<tr><td>${grade}등</td><td>${s.gradeCounts[grade]}장</td><td>${shown}</td><td>1/${Math.round(TOTAL_COMBOS / GRADE_COMBOS[grade]).toLocaleString()}</td></tr>`;
+  }).join("");
+  box.innerHTML =
+    `<div class="kpis diagnostic">` +
+    kpi(`${s.rounds}<small>회</small>`, `채점된 회차 · ${s.n.toLocaleString()}장`) +
+    kpi(won(s.spent), "누적 지출") +
+    kpi(won(s.prize), `누적 당첨금${s.unknownPrize ? " (2·3등 금액 미입력)" : ""}`) +
+    kpi(`${(s.spent ? s.prize / s.spent * 100 : 0).toFixed(1)}<small>%</small>`, "회수율") +
+    kpi(`${s.anyPrize}<small>장</small>`, `5등 이상 · 무작위 기대 ${s.expectedAny.toFixed(2)}장`) +
+    `</div>` +
+    `<div class="card"><h3>등수 분포와 무작위 기대</h3>` +
+    `<div class="table-x"><table class="bt-table"><thead><tr><th>등수</th><th>내 결과</th><th>무작위 기대</th><th>한 장 확률</th></tr></thead><tbody>${gradeRows}</tbody></table></div>` +
+    `<div class="callout">` +
+    `한 장당 평균 일치 <b>${s.meanMatches.toFixed(3)}개</b>(무작위 기대 0.800개, z ${zLabel(s.zMatches)}) · ` +
+    `5등 이상 z ${zLabel(s.zAny)}.<br>` +
+    `4·5등 고정 당첨금만 보면 <b>${won(fixedWon)}</b>, 무작위 기대 ${won(fixedExpected)}(지출의 ${(fixedExpected / s.spent * 100).toFixed(1)}%)입니다. ` +
+    `1~3등은 판매액에 따라 달라 기대값에서 뺐습니다. 로또 전체 환급률은 판매액의 약 50%입니다.` +
+    `</div>` +
+    `<p class="muted">|z|가 1.96 미만이면 무작위로 산 것과 구분되지 않습니다. 같은 회차 조합끼리는 같은 추첨을 공유해 z는 근사치입니다.</p></div>`;
+}
+
+function renderPurchaseModes(entries) {
+  const box = $("#purchaseModes");
+  if (!entries.length) { box.innerHTML = ""; return; }
+  const groups = new Map();
+  entries.forEach((entry) => {
+    const key = entry.record.mode || "other";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  });
+  const rows = [...groups.entries()].map(([mode, items]) => {
+    const s = purchaseStats(items);
+    return `<tr><td>${escapeHtml(PURCHASE_MODES[mode] || mode)}</td><td>${s.rounds}회 · ${s.n}장</td>` +
+      `<td>${s.meanMatches.toFixed(3)} <span class="muted-inline">z ${zLabel(s.zMatches)}</span></td>` +
+      `<td>${s.anyPrize} / ${s.expectedAny.toFixed(2)}</td>` +
+      `<td>${(s.spent ? s.prize / s.spent * 100 : 0).toFixed(1)}%</td></tr>`;
+  }).join("");
+  box.innerHTML = `<div class="card"><h3>구매 방식별 비교</h3>` +
+    `<div class="table-x"><table class="bt-table"><thead><tr><th>방식</th><th>표본</th><th>평균 일치(기대 0.800)</th><th>5등 이상 / 기대</th><th>회수율</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+    `<p class="muted">방식마다 수백 장이 쌓이기 전에는 차이 대부분이 운입니다. 회수율은 한 번의 4등만으로도 크게 흔들립니다.</p></div>`;
+}
+
+/* 1등 인원은 번호를 고르는 사람들의 습관에 따라 달라진다. 확률은 같고 나눠 갖는 몫만 달라진다.
+   최근 POPULARITY_WINDOW회 당첨조합의 1~12 개수별 평균 1등 인원을 데이터에서 매번 계산한다. */
+function popularityTable() {
+  const rows = D.draws.slice(-POPULARITY_WINDOW);
+  const groups = Array.from({ length: 5 }, () => ({ draws: 0, winners: 0 }));
+  rows.forEach((row) => {
+    const group = groups[Math.min(low12Of(numsOf(row)), 4)];
+    group.draws++;
+    group.winners += winnersOf(row);
+  });
+  const overall = rows.reduce((sum, row) => sum + winnersOf(row), 0) / rows.length;
+  return { groups: groups.map((g) => ({ ...g, mean: g.draws ? g.winners / g.draws : null })), overall, window: rows.length };
+}
+
+function renderPurchaseHabits(records) {
+  const box = $("#purchaseHabits");
+  const lines = records.flatMap((record) => record.lines.map((line) => line.numbers));
+  if (!lines.length) { box.innerHTML = ""; return; }
+  const n = lines.length;
+  const freq = Array(46).fill(0);
+  lines.forEach((numbers) => numbers.forEach((number) => freq[number]++));
+  const expected = n * 6 / 45;
+  const chi = freq.slice(1).reduce((sum, count) => sum + (count - expected) ** 2 / expected, 0);
+  const pChi = chiSquareP(chi, 44);
+  const counts = freq.slice(1);
+  const min = Math.min(...counts), max = Math.max(...counts, 1);
+  let grid = "";
+  for (let number = 1; number <= 45; number++) {
+    const t = max === min ? 0.5 : (freq[number] - min) / (max - min);
+    const fg = t > 0.55 ? "#fff" : "#0b2a6b";
+    grid += `<div class="hm-cell static" style="background:${lerpHex("#dbe7ff", "#1d4ed8", t)};color:${fg}"><div class="n">${number}</div><div class="c">${freq[number]}</div></div>`;
+  }
+  const ranked = Array.from({ length: 45 }, (_, i) => i + 1).sort((a, b) => freq[b] - freq[a] || a - b);
+  const never = ranked.filter((number) => freq[number] === 0);
+
+  const avg = (fn) => lines.reduce((sum, numbers) => sum + fn(numbers), 0) / n;
+  const consecShare = lines.filter((numbers) => numbers.some((number, i) => i && number - numbers[i - 1] === 1)).length / n;
+  const shapeRows = [
+    ["합계 평균", avg((ns) => ns.reduce((a, b) => a + b, 0)).toFixed(1), "138.0"],
+    ["홀수 개수 평균", avg((ns) => ns.filter((x) => x % 2).length).toFixed(2), (6 * 23 / 45).toFixed(2)],
+    ["1~12 개수 평균", avg(low12Of).toFixed(2), (6 * 12 / 45).toFixed(2)],
+    ["연속 번호 포함", `${(consecShare * 100).toFixed(1)}%`, `${(CONSEC_P * 100).toFixed(1)}%`],
+  ].map(([label, mine, random]) => `<tr><td>${label}</td><td>${mine}</td><td>${random}</td></tr>`).join("");
+
+  /* 같은 회차에 산 조합끼리 겹친 번호 수. 무작위 두 장은 평균 0.8개 겹친다. */
+  let pairs = 0, overlapSum = 0, overlapMax = 0;
+  records.forEach((record) => {
+    const sets = record.lines.map((line) => new Set(line.numbers));
+    for (let i = 0; i < sets.length; i++) {
+      for (let j = i + 1; j < sets.length; j++) {
+        const overlap = [...sets[i]].filter((number) => sets[j].has(number)).length;
+        pairs++; overlapSum += overlap; overlapMax = Math.max(overlapMax, overlap);
+      }
+    }
+  });
+  const lineCounts = new Map();
+  lines.forEach((numbers) => { const key = numbers.join(","); lineCounts.set(key, (lineCounts.get(key) || 0) + 1); });
+  const repeated = [...lineCounts.entries()].filter(([, count]) => count > 1).sort((a, b) => b[1] - a[1]);
+
+  const pop = popularityTable();
+  const mine = Array(5).fill(0);
+  lines.forEach((numbers) => mine[Math.min(low12Of(numbers), 4)]++);
+  const myExpectedWinners = mine.reduce((sum, count, g) => sum + count * (pop.groups[g].mean ?? pop.overall), 0) / n;
+  const popRows = pop.groups.map((g, i) =>
+    `<tr><td>${i === 4 ? "4개 이상" : `${i}개`}</td><td>${g.draws}회</td><td>${g.mean == null ? "-" : `${g.mean.toFixed(1)}명`}</td><td>${mine[i]}장</td></tr>`
+  ).join("");
+
+  box.innerHTML = `<div class="card"><h3>내 번호 습관 <span class="muted-inline">채점 여부와 무관하게 전체 ${n.toLocaleString()}장</span></h3>` +
+    `<div class="heatmap">${grid}</div>` +
+    `<p class="muted">가장 많이 고른 번호 ${ranked.slice(0, 5).map((x) => `${x}(${freq[x]})`).join(", ")}` +
+    `${never.length ? ` · 한 번도 안 고른 번호 ${never.length}개(${never.slice(0, 12).join(", ")}${never.length > 12 ? " …" : ""})` : ""}.<br>` +
+    `번호별 기대 ${expected.toFixed(1)}회 대비 카이제곱 ${chi.toFixed(1)}(자유도 44), p=${pChi < 0.001 ? "<0.001" : pChi.toFixed(3)}. ` +
+    `${pChi < 0.05 ? "번호 선택이 고르지 않습니다. 고정 번호나 좋아하는 번호가 있으면 당연히 이렇게 나옵니다." : "번호를 고르게 사용하고 있습니다."} ` +
+    `편중 자체는 당첨 확률을 바꾸지 않지만, 같은 번호에 몰리면 '전부 꽝' 확률이 올라갑니다.</p>` +
+    `<div class="table-x"><table class="bt-table"><thead><tr><th>모양</th><th>내 조합</th><th>무작위 기대</th></tr></thead><tbody>${shapeRows}</tbody></table></div>` +
+    `<p class="muted">같은 회차 조합끼리 평균 <b>${pairs ? (overlapSum / pairs).toFixed(2) : "-"}개</b> 겹침(무작위 0.80개, 최대 ${overlapMax}개)` +
+    `${repeated.length ? ` · 여러 회차에 반복 구매한 조합 ${repeated.length}개(최다 ${repeated[0][1]}회: ${repeated[0][0].replaceAll(",", " ")})` : ""}.</p>` +
+    `<h3 style="margin-top:14px">당첨되면 몇 명과 나눌까</h3>` +
+    `<div class="table-x"><table class="bt-table"><thead><tr><th>당첨조합의 1~12 개수</th><th>최근 ${pop.window}회</th><th>평균 1등 인원</th><th>내 조합</th></tr></thead><tbody>${popRows}</tbody></table></div>` +
+    `<p class="muted">내 조합이 1등이 되면 평균 <b>${myExpectedWinners.toFixed(1)}명</b>과 나눌 것으로 추정됩니다(최근 ${pop.window}회 전체 평균 ${pop.overall.toFixed(1)}명). ` +
+    `날짜·생일로 쓰이는 1~12가 많을수록 인원이 늘어나는 경향이 있지만 효과는 작고 통계적으로 경계선 수준입니다. ` +
+    `당첨 확률은 어떤 조합이든 같고, 달라지는 것은 나눠 받는 몫뿐입니다.</p></div>`;
+}
+
+function renderPurchaseList(records) {
+  const list = $("#purchaseList");
+  if (!records.length) {
+    list.innerHTML = `<div class="card empty-state">아직 구매 기록이 없습니다.<br>위에서 QR을 읽거나 번호를 붙여 넣어 추가하세요.</div>`;
+    return;
+  }
+  list.innerHTML = records.map((record) => {
+    const outcome = purchaseOutcome(record);
+    const lines = record.lines.map((line, index) => {
+      const result = outcome.results[index];
+      const resultHtml = result
+        ? `<div class="result"><b>${result.label}</b> · ${result.matches}개 일치${result.bonusMatched ? " + 보너스" : ""}${result.prize ? ` · ${won(result.prize)}` : ""}</div>`
+        : `<div class="result">추첨 전</div>`;
+      return `<div class="ledger-line">${ballsHtml(line.numbers)}${resultHtml}</div>`;
+    }).join("");
+    const state = outcome.draw
+      ? `<span class="ledger-state scored">${outcome.best ? `최고 ${outcome.best}등` : "미당첨"}</span>`
+      : `<span class="ledger-state pending">추첨 대기</span>`;
+    const needsPrize = outcome.draw && outcome.results.some((result) => result.grade && result.grade <= 3);
+    const prizeEditor = needsPrize
+      ? `<div class="controls purchase-prize"><label class="grow">이 기록의 실제 당첨금 합계(원)` +
+        `<input type="number" min="0" step="1" data-prize-input value="${outcome.override ?? ""}" placeholder="1~3등 금액은 직접 입력" /></label>` +
+        `<button class="ghost slim" data-save-prize>저장</button></div>`
+      : "";
+    const chips = [
+      PURCHASE_MODES[record.mode] || record.mode,
+      `${record.lines.length}장 · ${won(record.lines.length * PRICE_PER_LINE)}`,
+      record.source === "qr" ? "QR 입력" : record.source === "generation" ? "생성 결과에서" : "직접 입력",
+      ...(record.note ? [record.note] : []),
+    ];
+    return `<article class="card ledger-entry" data-purchase-id="${escapeHtml(record.id)}">` +
+      `<div class="ledger-entry-head"><div><h3>${record.round}회 · ${record.lines.length}장</h3>` +
+      `<div class="time">추가 ${escapeHtml(new Date(record.addedAt).toLocaleString("ko-KR"))}${outcome.draw ? ` · 당첨금 ${won(outcome.prize)}${outcome.unknownPrize ? " + 미입력" : ""}` : ""}</div></div>${state}</div>` +
+      `<div class="ledger-entry-body"><div class="ledger-settings">${chips.map((item) => `<span class="meta-chip">${escapeHtml(item)}</span>`).join("")}</div>` +
+      `${outcome.draw ? `<p class="muted">실제 ${record.round}회 ${numsOf(outcome.draw).join(" · ")} + 보너스 ${bonusOf(outcome.draw)}</p>` : ""}` +
+      `${lines}${prizeEditor}<div class="result-actions"><button class="ghost slim danger" data-delete-purchase>삭제</button></div></div></article>`;
+  }).join("");
+}
+
+function renderPurchases() {
+  const records = loadPurchases().sort((a, b) => b.round - a.round || String(b.addedAt).localeCompare(String(a.addedAt)));
+  const entries = [];
+  let pendingLines = 0;
+  records.forEach((record) => {
+    const outcome = purchaseOutcome(record);
+    if (outcome.draw) entries.push({ record, outcome });
+    else pendingLines += record.lines.length;
+  });
+  renderPurchaseSummary(entries, pendingLines);
+  renderPurchaseModes(entries);
+  renderPurchaseHabits(records);
+  renderPurchaseList(records);
+}
+
+function setPurchaseStatus(message, isError = false) {
+  const status = $("#purchaseStatus");
+  status.classList.toggle("error", isError);
+  status.textContent = message;
+}
+function addPurchaseFromForm() {
+  const parsed = parsePurchaseText($("#purchaseText").value);
+  if (!parsed.lines.length) throw new Error("추가할 번호가 없습니다.");
+  const round = parsed.round ?? parseInt($("#purchaseRound").value, 10);
+  if (!Number.isInteger(round) || round < 1 || round > D.prediction.nextRound) {
+    throw new Error(`회차는 1~${D.prediction.nextRound}회 사이여야 합니다.`);
+  }
+  const source = parsed.source === "qr" ? "qr" : $("#purchaseText").dataset.source === "generation" ? "generation" : "text";
+  const record = {
+    schemaVersion: 1,
+    id: `purchase-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    round,
+    mode: $("#purchaseMode").value,
+    source,
+    note: $("#purchaseNote").value.trim(),
+    addedAt: new Date().toISOString(),
+    lines: parsed.lines,
+    prizeOverride: null,
+  };
+  const records = loadPurchases();
+  if (records.some((item) => purchaseSignature(item) === purchaseSignature(record))) {
+    throw new Error(`${round}회에 같은 조합 묶음이 이미 기록되어 있습니다.`);
+  }
+  records.push(record);
+  savePurchases(records);
+  $("#purchaseText").value = "";
+  delete $("#purchaseText").dataset.source;
+  $("#purchaseNote").value = "";
+  renderPurchases();
+  return record;
+}
+function fillPurchaseFromGeneration(record) {
+  if (!record?.lines?.length) throw new Error("불러올 생성 결과가 없습니다.");
+  $("#purchaseText").value = record.lines.map((line) => line.numbers.join(" ")).join("\n");
+  $("#purchaseText").dataset.source = "generation";
+  $("#purchaseRound").value = record.targetRound;
+  $("#purchaseMode").value = "app";
+  setPurchaseStatus(`${record.targetRound}회 생성 결과 ${record.lines.length}조합을 불러왔습니다. 실제로 사지 않은 줄은 지운 뒤 추가하세요.`);
+}
+
+/* QR 인식은 브라우저 내장 BarcodeDetector를 쓴다(안드로이드 Chrome 등). 없으면 링크 붙여넣기로 안내한다. */
+let qrStream = null;
+function qrDetector() {
+  return "BarcodeDetector" in window ? new window.BarcodeDetector({ formats: ["qr_code"] }) : null;
+}
+function applyQrText(text) {
+  const tickets = parseQrPayload(text);
+  if (!tickets.length) throw new Error("로또 QR이 아닙니다. 용지 위쪽 QR을 비춰 주세요.");
+  const current = $("#purchaseText").value.trim();
+  $("#purchaseText").value = (current ? `${current}\n` : "") + text.trim();
+  delete $("#purchaseText").dataset.source;
+  const lines = tickets.reduce((sum, ticket) => sum + ticket.lines.length, 0);
+  setPurchaseStatus(`QR 인식: ${tickets[0].round}회 ${lines}게임. 구매 방식을 확인하고 추가하세요.`);
+}
+function stopQrScan() {
+  qrStream?.getTracks().forEach((track) => track.stop());
+  qrStream = null;
+  $("#qrVideo").hidden = true;
+  $("#qrScanBtn").textContent = "카메라로 QR 읽기";
+}
+async function startQrScan() {
+  const detector = qrDetector();
+  if (!detector) throw new Error("이 브라우저는 QR 인식을 지원하지 않습니다. 휴대폰 기본 카메라로 QR을 비춘 뒤 나타나는 링크를 길게 눌러 복사해 아래 칸에 붙여 넣으세요.");
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error("카메라는 HTTPS 또는 localhost에서만 열 수 있습니다.");
+  qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  const video = $("#qrVideo");
+  video.srcObject = qrStream;
+  video.hidden = false;
+  await video.play();
+  $("#qrScanBtn").textContent = "카메라 닫기";
+  setPurchaseStatus("QR을 화면 가운데에 맞춰 주세요.");
+  const tick = async () => {
+    if (!qrStream) return;
+    try {
+      const codes = await detector.detect(video);
+      const hit = codes.find((code) => parseQrPayload(code.rawValue).length);
+      if (hit) { stopQrScan(); applyQrText(hit.rawValue); return; }
+    } catch { /* 프레임이 아직 준비되지 않았다 */ }
+    setTimeout(tick, 250);
+  };
+  tick();
+}
+async function readQrImage(file) {
+  const detector = qrDetector();
+  if (!detector) throw new Error("이 브라우저는 사진 속 QR 인식을 지원하지 않습니다. QR 링크를 복사해 붙여 넣어 주세요.");
+  const bitmap = await createImageBitmap(file);
+  const codes = await detector.detect(bitmap);
+  const hit = codes.find((code) => parseQrPayload(code.rawValue).length);
+  if (!hit) throw new Error("사진에서 로또 QR을 찾지 못했습니다. QR이 크게 나오게 다시 찍어 주세요.");
+  applyQrText(hit.rawValue);
+}
+
+function exportPurchases() {
+  const records = loadPurchases();
+  if (!records.length) throw new Error("내보낼 구매 기록이 없습니다.");
+  const payload = { exportedAt: new Date().toISOString(), app: "LOTTO_TEST", kind: "purchases", schemaVersion: 1, records };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `lotto-purchases-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  return records.length;
+}
+/* 가져오기는 합치기다. id나 (회차+조합 묶음)이 같은 기록은 건너뛴다. */
+async function importPurchases(file) {
+  const payload = JSON.parse(await file.text());
+  const incoming = Array.isArray(payload) ? payload : payload.records;
+  if (!Array.isArray(incoming)) throw new Error("구매 기록 JSON이 아닙니다.");
+  const records = loadPurchases();
+  const ids = new Set(records.map((record) => record.id));
+  const signatures = new Set(records.map(purchaseSignature));
+  let added = 0, skipped = 0;
+  incoming.forEach((record) => {
+    const ok = record && Number.isInteger(record.round) && Array.isArray(record.lines) && record.lines.length &&
+      record.lines.every((line) => validLine(line.numbers || []));
+    if (!ok) throw new Error("형식이 맞지 않는 기록이 있습니다. 앱에서 내보낸 JSON인지 확인해 주세요.");
+    if (ids.has(record.id) || signatures.has(purchaseSignature(record))) { skipped++; return; }
+    records.push(record);
+    ids.add(record.id);
+    signatures.add(purchaseSignature(record));
+    added++;
+  });
+  savePurchases(records);
+  renderPurchases();
+  return { added, skipped };
+}
+
+function bindPurchases() {
+  $("#purchaseRound").value = D.prediction.nextRound;
+  $("#purchaseRound").max = D.prediction.nextRound;
+  $("#purchaseAddBtn").addEventListener("click", () => {
+    try {
+      const record = addPurchaseFromForm();
+      setPurchaseStatus(`${record.round}회 ${record.lines.length}장을 추가했습니다.`);
+    } catch (error) { setPurchaseStatus(error.message, true); }
+  });
+  $("#purchaseFromGenBtn").addEventListener("click", () => {
+    try { fillPurchaseFromGeneration(currentGeneration); } catch (error) { setPurchaseStatus(error.message, true); }
+  });
+  $("#qrScanBtn").addEventListener("click", async () => {
+    if (qrStream) { stopQrScan(); setPurchaseStatus(""); return; }
+    try { await startQrScan(); } catch (error) { stopQrScan(); setPurchaseStatus(error.message, true); }
+  });
+  $("#qrImageInput").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try { await readQrImage(file); } catch (error) { setPurchaseStatus(error.message, true); }
+  });
+  $("#exportPurchasesBtn").addEventListener("click", () => {
+    try { setPurchaseStatus(`구매 기록 ${exportPurchases()}건을 JSON으로 내보냈습니다.`); } catch (error) { setPurchaseStatus(error.message, true); }
+  });
+  $("#importPurchasesInput").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const { added, skipped } = await importPurchases(file);
+      setPurchaseStatus(`${added}건을 가져왔습니다${skipped ? `(중복 ${skipped}건 건너뜀)` : ""}.`);
+    } catch (error) { setPurchaseStatus(`가져오기 실패: ${error.message}`, true); }
+  });
+  $("#purchaseList").addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    const card = event.target.closest("[data-purchase-id]");
+    if (!button || !card) return;
+    const records = loadPurchases();
+    const record = records.find((item) => item.id === card.dataset.purchaseId);
+    if (!record) return;
+    if (button.matches("[data-delete-purchase]") && window.confirm(`${record.round}회 구매 기록 ${record.lines.length}장을 삭제할까요?`)) {
+      savePurchases(records.filter((item) => item.id !== record.id));
+      renderPurchases();
+    }
+    if (button.matches("[data-save-prize]")) {
+      const raw = card.querySelector("[data-prize-input]").value.trim();
+      record.prizeOverride = raw === "" ? null : Math.max(0, Math.round(Number(raw)));
+      savePurchases(records);
+      renderPurchases();
+    }
+  });
+  if (!qrDetector()) $("#qrHelp").hidden = false;
+  renderPurchases();
+}
+
 /* ── 이벤트 바인딩 (추천/QP/조회) ─────── */
 function bindActions() {
   renderExperimentRules();
@@ -1848,6 +2369,11 @@ function bindActions() {
       downloadGenerationText(record);
       return;
     }
+    if (button.matches("[data-buy-saved]")) {
+      fillPurchaseFromGeneration(record);
+      $('.topnav button[data-tab="purchases"]').click();
+      return;
+    }
     if (button.matches("[data-delete-saved]") && window.confirm("이 저장 결과를 삭제할까요?")) {
       saveSavedGenerations(records.filter((item) => item.id !== record.id));
       renderSavedGenerations();
@@ -1884,6 +2410,7 @@ function init() {
   });
   bindFilters();
   bindActions();
+  bindPurchases();
   renderNotes();
   renderDashboard();
   renderBacktest();
@@ -1904,6 +2431,9 @@ window.LOTTO_SCORING = {
   historicalCombinedPassRate,
   lineGrade,
   sha256Hex,
+  parsePurchaseText,
+  purchaseOutcome,
+  purchaseStats,
 };
 
 if (typeof document !== "undefined") {

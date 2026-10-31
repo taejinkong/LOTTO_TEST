@@ -25,6 +25,7 @@
     <nav class="topnav" id="topnav" aria-label="주요 화면">
       <button data-tab="dashboard" data-icon="⌂" class="active" aria-current="page">대시보드</button>
       <button data-tab="generate" data-icon="＋">번호 생성</button>
+      <button data-tab="purchases" data-icon="₩">구매 기록</button>
       <button data-tab="backtest" data-icon="✓">모델 검증</button>
       <button data-tab="ledger" data-icon="▤">예측 원장</button>
       <button data-tab="insights" data-icon="ⓘ">인사이트</button>
@@ -154,6 +155,54 @@
       <div id="savedGenerationList"></div>
     </div>
     <div class="card subtle"><button class="ghost" id="qpBtn">완전 무작위 1장</button><div id="qpResult"></div></div>
+  </section>
+
+  <section class="tab" id="tab-purchases" hidden>
+    <div class="card intro ledger-head">
+      <div>
+        <h2>구매 기록</h2>
+        <p class="muted">실제로 산 번호를 회차별로 쌓아 추첨 후 자동 채점합니다. 지출·당첨금·회수율과 번호 습관을 무작위 기대값과 비교합니다.</p>
+      </div>
+      <div class="result-actions">
+        <button class="ghost slim" id="exportPurchasesBtn">JSON 내보내기</button>
+        <label class="ghost slim file-button">JSON 가져오기<input type="file" id="importPurchasesInput" accept="application/json,.json" hidden /></label>
+      </div>
+    </div>
+    <div class="card callout warn ledger-warning">
+      구매 기록은 이 브라우저에만 저장되고 서버로 보내지 않습니다. 브라우저를 초기화하면 사라질 수 있으니 JSON으로 내보내 보관하세요.
+      다른 기기에서는 JSON 가져오기로 합칠 수 있습니다.
+    </div>
+    <div class="card purchase-form">
+      <h3>구매 추가</h3>
+      <div class="controls">
+        <label>회차<input type="number" id="purchaseRound" min="1" inputmode="numeric" /></label>
+        <label>구매 방식<select id="purchaseMode">
+          <option value="app">앱 생성</option>
+          <option value="auto">자동</option>
+          <option value="manual">수동</option>
+          <option value="semi">반자동</option>
+          <option value="other">기타</option>
+        </select></label>
+        <label class="grow">메모 (선택)<input type="text" id="purchaseNote" placeholder="예: 회사 앞 판매점" autocomplete="off" /></label>
+      </div>
+      <div class="result-actions purchase-sources">
+        <button class="ghost slim" id="qrScanBtn">카메라로 QR 읽기</button>
+        <label class="ghost slim file-button">QR 사진 선택<input type="file" id="qrImageInput" accept="image/*" hidden /></label>
+        <button class="ghost slim" id="purchaseFromGenBtn">생성 결과 불러오기</button>
+      </div>
+      <video id="qrVideo" class="qr-video" playsinline muted hidden></video>
+      <p class="muted" id="qrHelp" hidden>이 브라우저는 QR 인식을 지원하지 않습니다(아이폰 Safari 등). 기본 카메라 앱으로 용지의 QR을 비추고, 나타난 링크를 길게 눌러 복사한 뒤 아래 칸에 붙여 넣으세요.</p>
+      <label class="purchase-text-label">번호 (한 줄에 6개, 또는 QR 링크)
+        <textarea id="purchaseText" rows="6" placeholder="3 7 12 25 33 41&#10;001. 05 11 19 28 36 44&#10;https://...dhlottery.co.kr/qr.do?method=winQr&amp;v=1248q..."></textarea>
+      </label>
+      <p class="muted">QR 링크를 넣으면 회차는 QR 값을 따릅니다. QR의 게임 글자는 자동·수동을 확실히 구분하지 않아 구매 방식은 직접 골라 주세요.</p>
+      <button class="primary" id="purchaseAddBtn">구매 기록 추가</button>
+      <span class="save-status" id="purchaseStatus"></span>
+    </div>
+    <div id="purchaseSummary"></div>
+    <div id="purchaseModes"></div>
+    <div id="purchaseHabits"></div>
+    <div id="purchaseList"></div>
   </section>
 
   <section class="tab" id="tab-backtest" hidden>
