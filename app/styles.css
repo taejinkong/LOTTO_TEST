@@ -431,7 +431,7 @@ button { font-family: inherit; cursor: pointer; border: none; font-size: 15px; }
     margin: 0;
     padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 2px;
     overflow: visible;
     background: rgba(255,255,255,.96);
@@ -632,4 +632,25 @@ button { font-family: inherit; cursor: pointer; border: none; font-size: 15px; }
   .ball.lg { width: 31px; height: 31px; font-size: 13px; }
   .balls { gap: 4px; }
   #drawTable .ball { width: 26px; height: 26px; font-size: 11px; }
+}
+
+/* ── Purchases ─────────────────────────── */
+.file-button { display: inline-flex; align-items: center; cursor: pointer; font-size: 13.33px; }
+.purchase-form { display: flex; flex-direction: column; gap: 10px; }
+.purchase-form h3 { margin-bottom: 0; }
+.purchase-form .controls { margin-bottom: 0; }
+.purchase-form .muted { margin: 0; }
+.purchase-text-label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.purchase-text-label textarea {
+  width: 100%; min-height: 120px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  font: 16px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); resize: vertical;
+}
+.qr-video { width: 100%; max-width: 420px; aspect-ratio: 1; object-fit: cover; border-radius: 12px; background: #0f172a; }
+.purchase-prize { margin-top: 8px; }
+.hm-cell.static { cursor: default; }
+.hm-cell.static:hover { transform: none; border-color: transparent; }
+#purchaseHabits .heatmap { grid-template-columns: repeat(9, 1fr); margin-bottom: 10px; }
+@media (max-width: 680px) {
+  #purchaseHabits .heatmap { grid-template-columns: repeat(5, 1fr); }
+  .purchase-sources > * { flex: 1 1 140px; justify-content: center; }
 }

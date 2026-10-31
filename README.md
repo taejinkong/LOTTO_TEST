@@ -218,3 +218,15 @@ IF OE=3:3 AND LOW_1_10=0 THEN NEXT OE=3:3
 
 - 더 긴 검증 구간의 가중치 재튜닝
 - 보너스 번호 연계 규칙
+
+## 구매 기록 분석 (`purchase_report.py`)
+
+웹앱 **구매 기록** 화면에서 내보낸 JSON을 당첨 CSV와 대조해 누적 성적을 출력한다.
+앱 화면과 같은 계산(회수율, 등수 분포와 무작위 기대, 방식별 비교, 번호 편중)을 한다.
+
+```bash
+python3 purchase_report.py lotto-purchases-2026-10-31.json
+python3 purchase_report.py phone.json pc.json   # 여러 기기 파일 합치기(중복 제거)
+```
+
+구매 JSON은 개인 구매 내역이라 `.gitignore`로 저장소에서 제외한다(`lotto-purchases-*.json`).
