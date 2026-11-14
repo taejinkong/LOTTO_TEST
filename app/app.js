@@ -1012,13 +1012,22 @@ function generateCombos({
     if (combos.length < count * 0.8) break;
   }
   if (!best || !best.combos.length) throw new Error("조건을 만족하는 조합을 찾지 못했습니다.");
+  /* 요청 장수를 다 못 채우면 오류로 멈추지 않고 만든 만큼 돌려주고, 이유는 shortfall로 알린다. */
+  let shortfall = null;
   if (best.combos.length < count) {
-    const cause = available.length <= 30
-      ? `고를 수 있는 번호가 ${available.length}개뿐이라 서로 덜 겹치는 조합을 많이 만들 수 없습니다(조합 수학의 한계). 후보 풀이라면 상한 3이나 '제한 없음'이 현실적입니다. `
-      : fix.length || exclude.length
-        ? `고정·제외를 빼면 ${available.length}개 번호에서 ${needed}개씩 고르게 되어 조합 여유가 적습니다. 고정·제외를 줄이거나, `
-        : "";
-    throw new Error(`겹침 상한 ${limit}개(고정 번호 제외)를 지키며 ${count}개를 만들지 못했습니다(${best.combos.length}개까지 가능). ${cause}상한을 올리거나 장수를 줄여 주세요.`);
+    let reason;
+    if (limit === null) {
+      reason = `조건(고정·제외·필터·규칙)을 만족하는 조합이 ${best.generatedPoolSize.toLocaleString()}개뿐입니다. 조건을 줄이면 더 만들 수 있습니다.`;
+    } else {
+      const cause = available.length <= 30
+        ? `고를 수 있는 번호가 ${available.length}개뿐이라 서로 덜 겹치는 조합을 많이 만들 수 없습니다(조합 수학의 한계). `
+        : fix.length || exclude.length
+          ? `고정·제외를 빼면 ${available.length}개 번호에서 ${needed}개씩 고르게 되어 조합 여유가 적습니다. `
+          : "";
+      reason = `겹침 상한 ${limit}개(고정 번호 제외)를 지키며 만들 수 있는 조합이 ${best.combos.length}개까지입니다. ${cause}` +
+        "더 만들려면 겹침 상한을 올리거나(3~4개 또는 제한 없음) 고정·제외·규칙을 줄여 주세요.";
+    }
+    shortfall = { requested: count, made: best.combos.length, reason };
   }
   const diagnostics = portfolioDiagnostics(best.combos);
   diagnostics.hintOutlook = hintOutlook(best.combos, { fix, exclude, activeRuleIds }, diagnostics);
@@ -1027,6 +1036,7 @@ function generateCombos({
     ...portfolioStats(best.combos, fix.length),
     diagnostics,
     historySize: history.size,
+    shortfall,
   };
 }
 let currentGeneration = null;
@@ -1308,6 +1318,14 @@ function renderDiagnostics(diagnostics, settings) {
     "조합별 1등 확률은 어떤 설계에서도 1/8,145,060으로 동일합니다."));
   return card;
 }
+/* 앱 안 알림 창. 브라우저 alert 대신 <dialog>를 써서 화면 스타일·다크 모드를 맞춘다. */
+function showNotice(title, message) {
+  const dialog = $("#noticeDialog");
+  if (!dialog?.showModal) return;
+  $("#noticeTitle").textContent = title;
+  $("#noticeBody").textContent = message;
+  if (!dialog.open) dialog.showModal();
+}
 function renderCombos(result, settings) {
   const { combos, generatedPoolSize, coverage, maxOverlap, freeOverlap, diagnostics, usageCap, historySize } = result;
   const { fix, poolSize, modelName, seed, activeRuleIds } = settings;
@@ -1316,6 +1334,10 @@ function renderCombos(result, settings) {
   const modelLabel = modelName === "legacy" ? "페어+주기 v1" : "전체 규칙 통합 v2";
   const randomOrder = settings.order === "random";
   card.appendChild(el("h3", null, `${generatedPoolSize.toLocaleString()}개 후보 중 ${combos.length}개 · ${randomOrder ? "무작위 선택" : `점수 상위 · ${modelLabel}`}`));
+  if (result.shortfall) {
+    card.appendChild(el("div", "callout warn compact",
+      `<b>${result.shortfall.requested}개 요청 중 ${result.shortfall.made}개만 만들었습니다.</b> ${escapeHtml(result.shortfall.reason)}`));
+  }
   card.appendChild(el("div", "generation-meta",
     `<span class="meta-chip">시드 ${escapeHtml(seed)}</span>` +
     `<span class="meta-chip">사용 번호 ${coverage}개</span>` +
@@ -2460,6 +2482,7 @@ function bindPurchases() {
 function bindActions() {
   renderExperimentRules();
   renderNoLowRules();
+  $("#noticeClose")?.addEventListener("click", () => $("#noticeDialog").close());
   $("#noLowMode").addEventListener("change", renderNoLowRisk);
   $("#hintGuide")?.addEventListener("toggle", (event) => { if (event.target.open) renderHintGuide(); });
   const renderModelHelp = () => {
@@ -2517,6 +2540,9 @@ function bindActions() {
       };
       const result = generateCombos(settings);
       renderCombos(result, settings);
+      if (result.shortfall) {
+        showNotice(`${result.shortfall.requested}개 중 ${result.shortfall.made}개만 만들었습니다`, result.shortfall.reason);
+      }
     } catch (e) { errBox.textContent = e.message; errBox.hidden = false; }
   });
   $("#lockBtn").addEventListener("click", async () => {
