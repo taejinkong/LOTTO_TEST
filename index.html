@@ -124,6 +124,15 @@
         <div id="experimentRules"></div>
         <div class="callout warn compact" id="experimentRisk"></div>
       </details>
+      <details class="experiment-panel" id="noLowPanel">
+        <summary>1~10 제외 모드 <span id="noLowSummary">꺼짐</span></summary>
+        <p class="muted">1~10을 빼고 11~45로만 조합합니다. 아래 규칙은 1~1249회의 '1~10 없는 1등 조합' 272개가
+          이론보다 자주 보인 모양입니다(A: 250회 기간 5개 모두 우세, B: 5개 중 4개). 같은 데이터로 고른 후보라
+          확정 규칙이 아니며, 조건을 걸어도 조합 하나의 1등 확률은 바뀌지 않습니다.</p>
+        <label class="check nolow-toggle"><input type="checkbox" id="noLowMode" /> 1~10 제외하고 11~45로만 조합</label>
+        <div id="noLowRules"></div>
+        <div class="callout warn compact" id="noLowRisk"></div>
+      </details>
       <details class="experiment-panel" id="hintGuide">
         <summary>힌트 사용 원칙 <span class="guide-tag">포함·제외·필터를 쓰기 전에</span></summary>
         <div id="hintGuideBody"></div>
