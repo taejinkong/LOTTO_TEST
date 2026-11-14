@@ -415,6 +415,157 @@ function matchesExperimentalRules(numbers, activeRuleIds) {
   const checks = experimentalRuleChecks(numbers);
   return activeRuleIds.every((ruleId) => checks[ruleId]);
 }
+/* ── 1~10 제외 모드 · 우세 후보 규칙 ─────
+   1~1249회에서 '1~10이 하나도 없는 1등 조합 272개'를 11~45 조합 1,623,160개 전수와
+   비교해 이론보다 자주 나온 요소(no_low_features.py, no_low_periods.py).
+   A: 250회 기간 5개 모두 1배 초과 · B: 5개 중 4개.
+   같은 데이터로 고른 것이라 확정 규칙이 아니라 후보이며, NO_LOW_FOUND_THROUGH 이후 회차로 전향 검증한다.
+   조건을 걸어도 조합 하나의 1등 확률(1/8,145,060)은 그대로다. share는 11~45 조합 중 만족 비율(정확값). */
+const NO_LOW_FOUND_THROUGH = 1249;
+const NO_LOW_TOTAL = 1623160;
+const NO_LOW_PERIOD = 250;
+const acSeen = new Int32Array(46);
+let acStamp = 0;
+function acOf(numbers) {
+  acStamp++;
+  let distinct = 0;
+  for (let i = 0; i < numbers.length; i++) {
+    for (let j = i + 1; j < numbers.length; j++) {
+      const d = numbers[j] - numbers[i];
+      if (acSeen[d] !== acStamp) { acSeen[d] = acStamp; distinct++; }
+    }
+  }
+  return distinct - (numbers.length - 1);
+}
+const NO_LOW_RULES = [
+  { id: "nl_consec_0_or_3", tier: "A", label: "연번 0쌍 또는 3쌍 이상", share: 636580,
+    description: "붙은 번호 쌍이 아예 없거나 3쌍 이상인 조합", test: (n) => { const c = consecutiveCount(n); return c === 0 || c >= 3; } },
+  { id: "nl_consec_3", tier: "A", label: "연번 3쌍 이상", share: 42805,
+    description: "예: 22-23-24 + 27-28. 조합의 2.6%만 남는 좁은 조건", test: (n) => consecutiveCount(n) >= 3 },
+  { id: "nl_last_44", tier: "A", label: "마지막 번호 44~45", share: 515592,
+    description: "가장 큰 번호가 44 또는 45", test: (n) => n[n.length - 1] >= 44 },
+  { id: "nl_ac_4_5", tier: "B", label: "AC값 4~5", share: 128324,
+    description: "번호 간 차이의 종류가 적은(간격이 반복되는) 조합", test: (n) => { const a = acOf(n); return a === 4 || a === 5; } },
+  { id: "nl_sum_lt_140", tier: "B", label: "합계 140 미만", share: 177255,
+    description: "6개 합이 139 이하 (11~45 조합 평균은 168)", test: (n) => n.reduce((s, x) => s + x, 0) < 140 },
+  { id: "nl_high_3", tier: "B", label: "31~45가 정확히 3개", share: 518700,
+    description: "큰 번호 절반 구성", test: (n) => n.filter((x) => x >= 31).length === 3 },
+];
+const noLowRuleById = (id) => NO_LOW_RULES.find((rule) => rule.id === id);
+const noLowLabel = (id) => noLowRuleById(id)?.label || id;
+function noLowMask(ruleIds) {
+  return ruleIds.reduce((mask, id) => mask | (1 << NO_LOW_RULES.findIndex((rule) => rule.id === id)), 0);
+}
+function matchesNoLowRules(numbers, ruleIds) {
+  return ruleIds.every((id) => noLowRuleById(id).test(numbers));
+}
+/* 11~45 조합 전수 표(약 10MB). 여러 규칙을 함께 켰을 때의 정확한 비중과, 좁은 조건에서도
+   막힘 없이 후보를 뽑기 위해 처음 쓸 때 한 번만 만든다. */
+let noLowCache = null;
+function noLowTable() {
+  if (noLowCache) return noLowCache;
+  const combos = new Uint8Array(NO_LOW_TOTAL * 6);
+  const masks = new Uint8Array(NO_LOW_TOTAL);
+  const n = [0, 0, 0, 0, 0, 0];
+  let k = 0;
+  for (n[0] = 11; n[0] <= 40; n[0]++)
+    for (n[1] = n[0] + 1; n[1] <= 41; n[1]++)
+      for (n[2] = n[1] + 1; n[2] <= 42; n[2]++)
+        for (n[3] = n[2] + 1; n[3] <= 43; n[3]++)
+          for (n[4] = n[3] + 1; n[4] <= 44; n[4]++)
+            for (n[5] = n[4] + 1; n[5] <= 45; n[5]++) {
+              let mask = 0;
+              for (let r = 0; r < NO_LOW_RULES.length; r++) if (NO_LOW_RULES[r].test(n)) mask |= 1 << r;
+              masks[k] = mask;
+              combos.set(n, k * 6);
+              k++;
+            }
+  noLowCache = { combos, masks, count: k };
+  return noLowCache;
+}
+function noLowCombinedShare(ruleIds) {
+  if (!ruleIds.length) return NO_LOW_TOTAL;
+  if (ruleIds.length === 1) return noLowRuleById(ruleIds[0]).share;
+  const { masks, count } = noLowTable();
+  const sel = noLowMask(ruleIds);
+  let passed = 0;
+  for (let i = 0; i < count; i++) if ((masks[i] & sel) === sel) passed++;
+  return passed;
+}
+/* 과거 '1~10 없는 1등'에서 규칙(들)을 동시에 만족한 비율. 발견 구간(≤1249)과 이후(전향)를 나눠 센다. */
+function noLowHistory(ruleIds) {
+  const found = { n: 0, pass: 0 }, forward = { n: 0, pass: 0, rounds: [] };
+  const periods = new Map();
+  for (const row of D.draws) {
+    const numbers = [...numsOf(row)].sort((a, b) => a - b);
+    if (numbers[0] <= 10) continue;
+    const ok = matchesNoLowRules(numbers, ruleIds);
+    if (row[0] <= NO_LOW_FOUND_THROUGH) {
+      found.n++; found.pass += ok;
+      const key = Math.floor((row[0] - 1) / NO_LOW_PERIOD);
+      const p = periods.get(key) || { n: 0, pass: 0 };
+      p.n++; p.pass += ok;
+      periods.set(key, p);
+    } else {
+      forward.n++; forward.pass += ok;
+      forward.rounds.push({ round: row[0], ok });
+    }
+  }
+  return { found, forward, periods: [...periods.entries()].sort((a, b) => a[0] - b[0]).map(([, p]) => p) };
+}
+function selectedNoLowRuleIds() {
+  if (!$("#noLowMode")?.checked) return [];
+  return $$("#noLowRules input[data-nolow]:checked").map((input) => input.dataset.nolow);
+}
+function renderNoLowRules() {
+  const box = $("#noLowRules");
+  if (!box) return;
+  box.className = "experiment-rules";
+  box.innerHTML = NO_LOW_RULES.map((rule) => {
+    const h = noLowHistory([rule.id]);
+    const theory = rule.share / NO_LOW_TOTAL;
+    const obs = h.found.n ? h.found.pass / h.found.n : 0;
+    const above = h.periods.filter((p) => p.n && p.pass / p.n > theory).length;
+    return `<div class="experiment-rule">` +
+      `<input type="checkbox" id="nolow-${rule.id}" data-nolow="${rule.id}" disabled />` +
+      `<label for="nolow-${rule.id}"><span class="tier tier-${rule.tier}">${rule.tier}</span> ${escapeHtml(rule.label)}<small>${escapeHtml(rule.description)}</small></label>` +
+      `<div class="rates">과거 ${(obs * 100).toFixed(1)}%<br>이론 ${(theory * 100).toFixed(1)}% · ${(obs / theory).toFixed(2)}배<br>기간 ${above}/${h.periods.length}</div>` +
+    `</div>`;
+  }).join("");
+  $$("#noLowRules input[data-nolow]").forEach((input) => input.addEventListener("change", renderNoLowRisk));
+  renderNoLowRisk();
+}
+function renderNoLowRisk() {
+  const on = $("#noLowMode").checked;
+  $$("#noLowRules input[data-nolow]").forEach((input) => { input.disabled = !on; });
+  const ids = selectedNoLowRuleIds();
+  $("#noLowSummary").textContent = on ? `켜짐 · 규칙 ${ids.length}개` : "꺼짐";
+  const box = $("#noLowRisk");
+  const all = noLowHistory([]);
+  const baseRate = all.found.n / NO_LOW_FOUND_THROUGH;
+  if (!on) {
+    box.innerHTML = "켜면 1~10을 제외 번호에 넣고 11~45 안에서만 조합합니다. 규칙은 모드를 켠 뒤 고를 수 있습니다.";
+    return;
+  }
+  const head = `<b>11~45 조합 ${NO_LOW_TOTAL.toLocaleString()}개에서 고릅니다.</b> 1~10이 없는 1등은 이론 19.9%, ` +
+    `1~${NO_LOW_FOUND_THROUGH}회 실측 ${(baseRate * 100).toFixed(1)}%(${all.found.n}회)입니다. 조합 하나의 1등 확률은 1/8,145,060 그대로입니다.`;
+  if (!ids.length) { box.innerHTML = head; return; }
+  const share = noLowCombinedShare(ids);
+  if (!share) {
+    box.innerHTML = `${head}<br><b>선택한 규칙을 동시에 만족하는 11~45 조합이 없습니다.</b> 규칙을 줄여 주세요(예: 합계 140 미만과 마지막 번호 44~45·31~45 3개는 함께 성립하기 어렵습니다).`;
+    return;
+  }
+  const h = noLowHistory(ids);
+  const theory = share / NO_LOW_TOTAL;
+  const obs = h.found.n ? h.found.pass / h.found.n : 0;
+  const above = h.periods.filter((p) => p.n && p.pass / p.n > theory).length;
+  const fwd = h.forward.n
+    ? `${NO_LOW_FOUND_THROUGH + 1}회 이후 전향 검증: 1~10 없는 1등 ${h.forward.n}회 중 ${h.forward.pass}회 만족(이론대로면 ${(h.forward.n * theory).toFixed(1)}회).`
+    : `${NO_LOW_FOUND_THROUGH + 1}회 이후 1~10 없는 1등이 나오면 여기서 전향 검증합니다.`;
+  box.innerHTML = `${head}<br><b>선택 규칙 동시 만족</b> · 11~45 조합의 ${(theory * 100).toFixed(2)}%(${share.toLocaleString()}개) · ` +
+    `과거 1~10 없는 1등 ${h.found.pass}/${h.found.n}회(${(obs * 100).toFixed(1)}%) → <b>${theory ? (obs / theory).toFixed(2) : "-"}배</b> · 250회 기간 ${above}/${h.periods.length}에서 우세.<br>` +
+    `${fwd} 이 배수는 1~${NO_LOW_FOUND_THROUGH}회로 사후에 고른 후보라 실제보다 크게 보일 수 있습니다.`;
+}
 function candidateFeatures(numbers) {
   const odd = numbers.filter((number) => number % 2).length;
   const bands = [
@@ -712,6 +863,7 @@ function hintOutlook(combos, { fix, exclude, activeRuleIds }, diagnostics) {
 }
 function generateCombos({
   count, poolSize, scenarioName, modelName, noConsec, maxOverlap, fix, exclude, seed, activeRuleIds, order = "score",
+  noLowRuleIds = [],
 }) {
   const fixed = new Set(fix), excluded = new Set(exclude);
   const limit = Number.isFinite(maxOverlap) ? maxOverlap : null;
@@ -733,10 +885,40 @@ function generateCombos({
     if (noConsec && consecutiveCount(numbers) > 0) return;
     if (!matchesScenario(numbers, scenario)) return;
     if (!matchesExperimentalRules(numbers, activeRuleIds)) return;
+    if (noLowRuleIds.length && !matchesNoLowRules(numbers, noLowRuleIds)) return;
     found.set(key, { numbers, parts: scoreParts(numbers, modelName) });
   };
   const buildPool = (size) => {
     const found = new Map();
+    /* 1~10 제외 우세 규칙은 조합의 2.6%만 남기기도 해서 무작위 표본으로는 잘 안 채워진다.
+       11~45 전수 표에서 규칙·고정·제외를 통과한 조합만 모은 뒤 시드로 섞어 앞에서부터 쓴다. */
+    if (noLowRuleIds.length) {
+      if (available.some((number) => number <= 10)) throw new Error("1~10 제외 규칙은 1~10이 제외된 상태에서만 쓸 수 있습니다.");
+      const { combos, masks, count: total } = noLowTable();
+      const sel = noLowMask(noLowRuleIds);
+      const blocked = new Uint8Array(46);
+      excluded.forEach((number) => { blocked[number] = 1; });
+      const want = new Uint8Array(46);
+      fix.forEach((number) => { want[number] = 1; });
+      const passing = new Int32Array(total);
+      let n = 0;
+      for (let i = 0; i < total; i++) {
+        if ((masks[i] & sel) !== sel) continue;
+        let ok = true, hasFix = 0;
+        for (let j = i * 6; j < i * 6 + 6; j++) {
+          if (blocked[combos[j]]) { ok = false; break; }
+          hasFix += want[combos[j]];
+        }
+        if (ok && hasFix === fix.length) passing[n++] = i;
+      }
+      const rng = createSeededRandom(`${seed}|nolow`);
+      for (let i = 0; i < n && found.size < size; i++) {
+        const j = i + Math.floor(rng() * (n - i));
+        const pick = passing[j]; passing[j] = passing[i]; passing[i] = pick;
+        consider(found, Array.from(combos.subarray(pick * 6, pick * 6 + 6)));
+      }
+      return { found, attempts: n };
+    }
     /* 후보 풀처럼 가능한 조합 수가 요청 풀보다 적으면 표본 대신 전부 나열한다.
        표본으로는 중복만 계속 뽑혀 수십만 번을 헛돈다. */
     const space = choose(available.length, needed);
@@ -1052,6 +1234,7 @@ function renderHintOutlook(outlook, lines, settings) {
     if (settings.userExclude?.length) parts.push(`제외 ${settings.userExclude.join(", ")}`);
   } else if (settings.exclude.length) parts.push(`제외 ${settings.exclude.join(", ")}`);
   if (settings.activeRuleIds?.length) parts.push(`실험 필터 ${settings.activeRuleIds.length}개`);
+  if (settings.noLowRuleIds?.length) parts.push(`1~10 제외 우세 규칙 ${settings.noLowRuleIds.length}개`);
   const row = (data) =>
     `<tr class="${data.cls}"><td>${data.label}</td><td data-label="무작위 확률">${data.key === "overall" ? "–" : pct(data.p)}</td>` +
     `<td data-label="5등">${data.fifth.toFixed(2)}장</td><td data-label="4등">${data.fourth.toFixed(2)}장</td>` +
@@ -1139,7 +1322,8 @@ function renderCombos(result, settings) {
     `<span class="meta-chip${freeOverlap >= 3 ? " warn" : ""}">최대 공통 ${fix.length ? `${freeOverlap}개 + 고정 ${fix.length}개` : `${maxOverlap}개`}</span>` +
     (usageCap ? `<span class="meta-chip">번호 사용 상한 ${usageCap}장</span>` : "") +
     `<span class="meta-chip">과거 1등 ${historySize.toLocaleString()}개 제외</span>` +
-    `<span class="meta-chip${activeRuleIds.length ? " warn" : ""}">실험 필터 ${activeRuleIds.length}개</span>`
+    `<span class="meta-chip${activeRuleIds.length ? " warn" : ""}">실험 필터 ${activeRuleIds.length}개</span>` +
+    (settings.noLowMode ? `<span class="meta-chip warn">1~10 제외 · 우세 규칙 ${settings.noLowRuleIds.length}개</span>` : "")
   ));
   combos.forEach(({ numbers, parts }, index) => {
     const row = el("div", "combo");
@@ -1178,6 +1362,8 @@ function renderCombos(result, settings) {
       excluded: [...settings.exclude],
       candidatePool: settings.candidatePool?.length ? [...settings.candidatePool] : null,
       experimentalRules: [...activeRuleIds],
+      noLowMode: Boolean(settings.noLowMode),
+      noLowRules: [...(settings.noLowRuleIds || [])],
     },
     weights: modelName === "legacy" ? D.prediction.legacyWeights : D.prediction.weights,
     lines: combos.map(({ numbers, parts }) => ({ numbers: [...numbers], score: Number(parts.total.toFixed(8)) })),
@@ -1260,6 +1446,7 @@ function generationText(record) {
       ? `후보 풀 ${settings.candidatePool.length}개 ${settings.candidatePool.join(", ")}`
       : settings.excluded?.length ? `제외 번호 ${settings.excluded.join(", ")}` : "제외 번호 없음",
     filters.length ? `실험 필터 ${filters.join(", ")}` : "실험 필터 없음",
+    ...(settings.noLowMode ? [`1~10 제외 모드${settings.noLowRules?.length ? ` · 우세 규칙 ${settings.noLowRules.map(noLowLabel).join(", ")}` : ""}`] : []),
   ];
   const generatedAt = new Date(record.generatedAt || record.savedAt || Date.now()).toLocaleString("ko-KR");
   const lines = (record.lines || []).map((line, index) =>
@@ -1697,6 +1884,7 @@ function renderLedger() {
         : "분산 제한 없음",
       ...(record.settings.candidatePool?.length ? [`후보 풀 ${record.settings.candidatePool.length}개`] : []),
       filters.length ? `실험: ${filters.join("·")}` : "실험 필터 없음",
+      ...(record.settings.noLowMode ? [`1~10 제외${record.settings.noLowRules?.length ? `: ${record.settings.noLowRules.map(noLowLabel).join("·")}` : ""}`] : []),
     ];
     const lines = record.lines.map((line, index) => {
       const result = outcome.results[index];
@@ -2271,6 +2459,8 @@ function bindPurchases() {
 /* ── 이벤트 바인딩 (추천/QP/조회) ─────── */
 function bindActions() {
   renderExperimentRules();
+  renderNoLowRules();
+  $("#noLowMode").addEventListener("change", renderNoLowRisk);
   $("#hintGuide")?.addEventListener("toggle", (event) => { if (event.target.open) renderHintGuide(); });
   const renderModelHelp = () => {
     const legacy = $("#genModel").value === "legacy";
@@ -2301,6 +2491,15 @@ function bindActions() {
         candidatePool = [...poolSet].sort((a, b) => a - b);
         exclude = Array.from({ length: 45 }, (_, i) => i + 1).filter((n) => !poolSet.has(n));
       }
+      /* 1~10 제외 모드: 1~10을 제외 번호에 더한다. 진단·힌트 채점도 '10개 제외'로 그대로 이어진다. */
+      const noLowMode = $("#noLowMode").checked;
+      if (noLowMode) {
+        if (fix.some((n) => n <= 10)) throw new Error("1~10 제외 모드에서는 고정 번호에 1~10을 쓸 수 없습니다.");
+        if (candidatePool?.some((n) => n <= 10)) throw new Error("1~10 제외 모드에서는 후보 풀에 1~10을 넣을 수 없습니다.");
+        exclude = [...new Set([...exclude, ...Array.from({ length: 10 }, (_, i) => i + 1)])].sort((a, b) => a - b);
+      }
+      const noLowRuleIds = selectedNoLowRuleIds();
+      if (noLowRuleIds.length && !noLowCombinedShare(noLowRuleIds)) throw new Error("선택한 1~10 제외 규칙을 동시에 만족하는 조합이 없습니다. 규칙을 줄여 주세요.");
       const poolSize = parseInt($("#genPool").value, 10);
       const modelName = $("#genModel").value;
       const settings = {
@@ -2314,6 +2513,7 @@ function bindActions() {
         order: $("#genOrder").value,
         seed: $("#genSeed").value.trim(),
         activeRuleIds: selectedExperimentRuleIds(),
+        noLowMode, noLowRuleIds,
       };
       const result = generateCombos(settings);
       renderCombos(result, settings);
@@ -2423,6 +2623,10 @@ window.LOTTO_SCORING = {
   candidateFeatures,
   scoreParts,
   experimentalRuleChecks,
+  NO_LOW_RULES,
+  matchesNoLowRules,
+  noLowCombinedShare,
+  noLowHistory,
   createSeededRandom,
   generateCombos,
   portfolioStats,
